@@ -2065,3 +2065,120 @@ def test_write_proposer_agent_config_skipped_when_section_hidden(tmp_path):
     optimizer._write_proposer_agent_config(ws)
     assert not (ws / "opencode.json").exists()
     assert not (ws / ".claude").exists()
+
+
+def test_deploy_subagent_assets_writes_files_when_claude_diagnose(tmp_path):
+    """Claude proposer + --diagnose must drop the workspace CLAUDE.md
+    and both subagent definitions on disk so the docker bind-mount
+    surfaces them inside the container."""
+
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_agent="claude",
+            diagnose=True,
+        )
+    )
+    ws = tmp_path / "iter_001_ws"
+    ws.mkdir()
+    optimizer._deploy_subagent_assets(ws)
+
+    claudemd = ws / "CLAUDE.md"
+    proposer_def = ws / ".claude" / "agents" / "proposer.md"
+    diagnoser_def = ws / ".claude" / "agents" / "diagnoser.md"
+
+    assert claudemd.exists(), "CLAUDE.md missing — Claude Code will not load workspace constraints"
+    assert proposer_def.exists(), "proposer subagent definition missing — --agent proposer would fail"
+    assert diagnoser_def.exists(), "diagnoser subagent definition missing — Task(diagnoser) would fail"
+
+    # Frontmatter must survive the verbatim copy.
+    assert proposer_def.read_text(encoding="utf-8").startswith("---\nname: proposer\n")
+    assert diagnoser_def.read_text(encoding="utf-8").startswith("---\nname: diagnoser\n")
+    # workspace.md by design has no frontmatter — it's project context, not a subagent.
+    assert not claudemd.read_text(encoding="utf-8").startswith("---\n")
+
+
+def test_deploy_subagent_assets_noop_for_opencode(tmp_path):
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_agent="opencode",
+            diagnose=True,
+        )
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    optimizer._deploy_subagent_assets(ws)
+    # OpenCode keeps the legacy prompt-string injection path.
+    assert not (ws / "CLAUDE.md").exists()
+    assert not (ws / ".claude" / "agents").exists()
+
+
+def test_deploy_subagent_assets_noop_when_diagnose_off(tmp_path):
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_agent="claude",
+            diagnose=False,
+        )
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    optimizer._deploy_subagent_assets(ws)
+    assert not (ws / "CLAUDE.md").exists()
+    assert not (ws / ".claude" / "agents").exists()
+
+
+def test_docker_sandbox_bind_mounts_workspace_so_subagent_files_are_visible(
+    tmp_path, monkeypatch
+):
+    """Subagent assets are written on the host into workspace_dir; the
+    docker sandbox must bind-mount that exact directory at the
+    container cwd so Claude Code finds CLAUDE.md and
+    .claude/agents/*.md the same way it would on the host."""
+
+    from optimizer1.claude_runner import ProposerSandboxConfig, _prepare_agent_command
+
+    # Pretend docker is on PATH so the sandbox path is exercised.
+    monkeypatch.setattr(
+        "optimizer1.claude_runner.shutil.which",
+        lambda name: "/usr/bin/docker" if name == "docker" else None,
+    )
+
+    workspace_dir = tmp_path / "iter_007_ws"
+    workspace_dir.mkdir()
+    (workspace_dir / "CLAUDE.md").write_text("constraints", encoding="utf-8")
+    (workspace_dir / ".claude" / "agents").mkdir(parents=True)
+    (workspace_dir / ".claude" / "agents" / "proposer.md").write_text(
+        "---\nname: proposer\n---\nbody", encoding="utf-8"
+    )
+
+    sandbox = ProposerSandboxConfig(
+        kind="docker",
+        docker_image="memo-proposer:test",
+        docker_workspace="/workspace",
+    )
+    prepared = _prepare_agent_command(
+        ("claude", "-p", "--agent", "proposer"),
+        cwd=workspace_dir,
+        sandbox=sandbox,
+    )
+    cmd = prepared.command
+
+    # The host workspace_dir must be bind-mounted at /workspace (rw) and
+    # set as the container cwd, so Claude Code's CLAUDE.md auto-discovery
+    # and `--agent proposer` lookup resolve to the files we just wrote.
+    expected_mount = f"{workspace_dir.resolve()}:/workspace:rw"
+    assert "-v" in cmd
+    assert expected_mount in cmd
+    assert "-w" in cmd
+    assert "/workspace" in cmd
+    # Also confirm the launcher cwd that the rest of the runner uses
+    # for log extraction sees the container path, not the host path.
+    assert prepared.extract_cwd == Path("/workspace")
