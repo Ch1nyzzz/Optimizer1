@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optiharness"
+version = "0.1.0"
+description = "Optimization harness for benchmark-specific agent evolution."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+external = []
+source = []
+dev = [
+  "pytest>=8.0",
+]
+[project.scripts]
+optiharness = "optiharness.cli:main"
+memomemo = "memomemo.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

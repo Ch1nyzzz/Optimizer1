@@ -1,0 +1,5 @@
+CLAUDE_AUTO_UPDATE=false
+CLAUDE_TIMEOUT_MINUTES=60
+CLAUDE_OUTPUT_FORMAT=json
+SESSION_CONTINUITY=true
+ALLOWED_TOOLS="Read,Write,Edit,MultiEdit,Glob,Grep,Task,TodoWrite,WebFetch,WebSearch,Bash"
