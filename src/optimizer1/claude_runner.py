@@ -1,12 +1,10 @@
-"""OpenCode proposer runner.
+"""Claude Code proposer runner.
 
-This module wraps the ``opencode run`` CLI for non-interactive proposer
-invocations. The historical name ``claude_runner`` and the
-``ClaudeResult`` dataclass are kept as compatibility names so existing
-callers in this Optimizer1 copy continue to work without large
-import-graph churn. Only the OpenCode runner is supported here; the
-Claude Code, Codex, and Kimi runners that previously lived in this file
-have been removed.
+This module wraps the ``claude -p`` CLI for non-interactive proposer
+invocations. Optimizer1 only supports the Claude Code proposer; older
+OpenCode / Codex / Kimi runners that previously lived in this file have
+been removed. The historical names ``claude_runner`` and ``ClaudeResult``
+are preserved as the canonical runner / result types.
 """
 
 from __future__ import annotations
@@ -24,8 +22,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_OPENCODE_MODEL = "deepseek/deepseek-v4-pro"
-OPENCODE_EXECUTABLE = "opencode"
 CLAUDE_EXECUTABLE = "claude"
 DEFAULT_CLAUDE_MODEL = "deepseek-v4-pro[1m]"
 DEFAULT_CLAUDE_BASE_URL = "https://api.deepseek.com/anthropic"
@@ -40,8 +36,8 @@ _CLAUDE_THIRD_PARTY_ENV: dict[str, str] = {
 }
 DEFAULT_DOCKER_ENV_VARS = (
     "DEEPSEEK_API_KEY",
-    "OPENCODE_API_KEY",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
     "OPENAI_API_KEY",
     "HTTP_PROXY",
     "HTTPS_PROXY",
@@ -54,11 +50,7 @@ DEFAULT_DOCKER_ENV_VARS = (
 
 @dataclass(frozen=True)
 class ClaudeResult:
-    """One proposer invocation result.
-
-    Compatibility name retained from the previous multi-agent runner; the
-    only proposer that produces these is OpenCode.
-    """
+    """One Claude Code proposer invocation result."""
 
     returncode: int | None
     timed_out: bool
@@ -91,10 +83,6 @@ class _PreparedAgentCommand:
     run_cwd: Path
     extract_cwd: Path
     error: str = ""
-
-
-def has_opencode_cli() -> bool:
-    return shutil.which(OPENCODE_EXECUTABLE) is not None
 
 
 def has_claude_cli() -> bool:
@@ -216,156 +204,31 @@ def run_code_agent_prompt(
     claude_auth_token: str | None = None,
     claude_agent_name: str | None = None,
 ) -> ClaudeResult:
-    """Run the configured proposer code agent.
+    """Run the Claude Code proposer.
 
-    Supported values for ``agent``: ``"opencode"`` and ``"claude"``.
-
-    ``claude_agent_name`` is forwarded to ``claude --agent <name>`` so
-    the main session runs as the named ``.claude/agents/<name>.md``
-    subagent (its frontmatter supplies the system prompt and tool
-    allowlist). Ignored for OpenCode, which has no equivalent.
+    Only ``agent="claude"`` is supported. ``claude_agent_name`` is
+    forwarded to ``claude --agent <name>`` so the main session runs as
+    the named ``.claude/agents/<name>.md`` subagent (its frontmatter
+    supplies the system prompt and tool allowlist).
     """
 
     normalized = agent.strip().lower()
-    if normalized == "opencode":
-        return run_opencode_prompt(
-            prompt,
-            cwd=cwd,
-            log_dir=log_dir,
-            name=name,
-            model=model,
-            timeout_s=timeout_s,
-            sandbox=sandbox,
+    if normalized != "claude":
+        raise ValueError(
+            f"unsupported proposer agent: {agent!r}; only 'claude' is supported"
         )
-    if normalized == "claude":
-        return run_claude_prompt(
-            prompt,
-            cwd=cwd,
-            log_dir=log_dir,
-            name=name,
-            model=model,
-            timeout_s=timeout_s,
-            sandbox=sandbox,
-            base_url=claude_base_url,
-            auth_token=claude_auth_token,
-            agent_name=claude_agent_name,
-        )
-    raise ValueError(
-        f"unsupported proposer agent: {agent!r}; supported: 'opencode', 'claude'"
+    return run_claude_prompt(
+        prompt,
+        cwd=cwd,
+        log_dir=log_dir,
+        name=name,
+        model=model,
+        timeout_s=timeout_s,
+        sandbox=sandbox,
+        base_url=claude_base_url,
+        auth_token=claude_auth_token,
+        agent_name=claude_agent_name,
     )
-
-
-def run_opencode_prompt(
-    prompt: str,
-    *,
-    cwd: Path,
-    log_dir: Path,
-    name: str,
-    model: str = DEFAULT_OPENCODE_MODEL,
-    timeout_s: int = 2400,
-    sandbox: ProposerSandboxConfig | None = None,
-) -> ClaudeResult:
-    """Run ``opencode run`` non-interactively and persist logs."""
-
-    cwd = cwd.resolve(strict=False)
-    command = _opencode_command(model=model)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    started = time.time()
-    prepared = _prepare_agent_command(command, cwd=cwd, sandbox=sandbox)
-
-    if prepared.error:
-        result = ClaudeResult(
-            returncode=None,
-            timed_out=False,
-            stdout="",
-            stderr=prepared.error,
-            raw_stdout="",
-            command=prepared.command,
-            usage=None,
-            tool_access=_empty_tool_access(),
-            duration_s=0.0,
-            metrics={},
-        )
-        _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
-        return result
-
-    if not _uses_docker_sandbox(sandbox) and not has_opencode_cli():
-        result = ClaudeResult(
-            returncode=None,
-            timed_out=False,
-            stdout="",
-            stderr="opencode CLI not found on PATH",
-            raw_stdout="",
-            command=command,
-            usage=None,
-            tool_access=_empty_tool_access(),
-            duration_s=0.0,
-            metrics={},
-        )
-        _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
-        return result
-
-    try:
-        completed = subprocess.run(
-            prepared.command,
-            input=prompt,
-            cwd=str(prepared.run_cwd),
-            text=True,
-            capture_output=True,
-            timeout=timeout_s,
-        )
-        raw_stdout = completed.stdout or ""
-        stdout, usage = _extract_opencode_result(raw_stdout)
-        tool_access = _extract_opencode_tool_access(raw_stdout, cwd=prepared.extract_cwd)
-        duration_s = time.time() - started
-        metrics = _extract_session_metrics(
-            usage=usage,
-            tool_access=tool_access,
-            duration_s=duration_s,
-        )
-        result = ClaudeResult(
-            returncode=completed.returncode,
-            timed_out=False,
-            stdout=stdout,
-            stderr=completed.stderr or "",
-            raw_stdout=raw_stdout,
-            command=prepared.command,
-            usage=usage,
-            tool_access=tool_access,
-            duration_s=duration_s,
-            metrics=metrics,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raw_stdout = _coerce(exc.stdout)
-        tool_access = _extract_opencode_tool_access(raw_stdout, cwd=prepared.extract_cwd)
-        duration_s = time.time() - started
-        result = ClaudeResult(
-            returncode=None,
-            timed_out=True,
-            stdout=raw_stdout,
-            stderr=_coerce(exc.stderr),
-            raw_stdout=raw_stdout,
-            command=prepared.command,
-            usage=None,
-            tool_access=tool_access,
-            duration_s=duration_s,
-            metrics=_extract_session_metrics(
-                usage=None,
-                tool_access=tool_access,
-                duration_s=duration_s,
-            ),
-        )
-
-    _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
-    return result
-
-
-def _opencode_command(*, model: str) -> tuple[str, ...]:
-    parts: list[str] = [OPENCODE_EXECUTABLE, "run", "--print-logs"]
-    if model:
-        parts.extend(["--model", model])
-    parts.append("-")
-    return tuple(parts)
 
 
 def run_claude_prompt(
@@ -708,42 +571,6 @@ def _extract_claude_tool_access(
     }
 
 
-def _extract_opencode_result(raw_stdout: str) -> tuple[str, dict[str, Any] | None]:
-    text, usage = _extract_jsonl_result(raw_stdout)
-    if usage is not None or (text and text != raw_stdout):
-        return text, usage
-    return raw_stdout, None
-
-
-def _extract_jsonl_result(raw_stdout: str) -> tuple[str, dict[str, Any] | None]:
-    events = _jsonl_events(raw_stdout)
-    text_chunks: list[str] = []
-    usage: dict[str, Any] = {}
-    for event in events:
-        event_type = str(event.get("type") or event.get("event") or "")
-        item = event.get("item")
-        if isinstance(item, dict) and item.get("type") == "agent_message":
-            value = item.get("text")
-            if isinstance(value, str) and value:
-                text_chunks.append(value)
-        if event_type in {"result", "final", "agent_message", "message"}:
-            for key in ("result", "message", "text", "content", "last_message"):
-                value = event.get(key)
-                if isinstance(value, str) and value:
-                    text_chunks.append(value)
-                    break
-        event_usage = event.get("usage")
-        if isinstance(event_usage, dict):
-            usage["usage"] = _merge_usage_dicts(
-                usage.get("usage") if isinstance(usage.get("usage"), dict) else {},
-                event_usage,
-            )
-        for key in ("total_cost_usd", "duration_ms", "duration_api_ms", "num_turns", "session_id"):
-            if key in event:
-                usage[key] = event[key]
-    return "\n".join(text_chunks) or raw_stdout, usage or None
-
-
 def _jsonl_events(raw_stdout: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line in raw_stdout.splitlines():
@@ -764,127 +591,9 @@ def _merge_usage_dicts(left: dict[str, Any], right: dict[str, Any]) -> dict[str,
     return merged
 
 
-def _extract_opencode_tool_access(
-    raw_stdout: str, *, cwd: Path | str | None = None
-) -> dict[str, Any]:
-    tool_uses: list[dict[str, Any]] = []
-    files_read: dict[str, dict[str, int]] = {}
-    files_written: dict[str, dict[str, int]] = {}
-    grep_requests: list[dict[str, Any]] = []
-
-    for event in _jsonl_events(raw_stdout):
-        item = event.get("item")
-        if (
-            isinstance(item, dict)
-            and item.get("type") == "command_execution"
-            and event.get("type") != "item.completed"
-        ):
-            continue
-        name = _opencode_tool_name(event)
-        if not name:
-            continue
-        tool_input = _opencode_tool_input(event)
-        record = {
-            "id": event.get("id") or event.get("call_id") or event.get("item_id"),
-            "name": name,
-            "input": tool_input,
-        }
-        output = _opencode_tool_output(event)
-        if output:
-            record["_output"] = output
-        tool_uses.append(record)
-        path = _tool_path(tool_input)
-        if path and name in {"Read", "read_file"}:
-            rel = _make_relative(path, cwd)
-            current = files_read.setdefault(rel, {"reads": 0, "lines": 0})
-            current["reads"] += 1
-        elif path and name in {"Write", "Edit", "apply_patch", "write_file"}:
-            _add_written_lines(
-                files_written,
-                _make_relative(path, cwd),
-                _count_text_lines(tool_input.get("content") or tool_input.get("new_string")),
-            )
-        elif name in {"Grep", "rg", "search"}:
-            grep_requests.append(
-                {
-                    "pattern": tool_input.get("pattern") or tool_input.get("query"),
-                    "path": tool_input.get("path"),
-                    "glob": tool_input.get("glob"),
-                }
-            )
-        elif _is_shell_tool_name(name):
-            _add_shell_command_access(
-                record,
-                files_read=files_read,
-                files_written=files_written,
-                grep_requests=grep_requests,
-                cwd=cwd,
-            )
-
-    for record in tool_uses:
-        record.pop("_output", None)
-
-    return {
-        "read_files": sorted(files_read),
-        "grep_requests": _dedupe_dicts(grep_requests),
-        "tool_uses": tool_uses,
-        "tool_counts": dict(
-            sorted(Counter(str(item.get("name") or "") for item in tool_uses).items())
-        ),
-        "files_read": dict(sorted(files_read.items())),
-        "files_written": dict(sorted(files_written.items())),
-    }
-
-
-def _opencode_tool_name(event: dict[str, Any]) -> str:
-    item = event.get("item")
-    if isinstance(item, dict) and item.get("type") == "command_execution":
-        return "Shell"
-    for key in ("tool_name", "name", "tool", "command"):
-        value = event.get(key)
-        if isinstance(value, str) and value:
-            return value
-    if isinstance(item, dict):
-        for key in ("tool_name", "name", "tool", "command"):
-            value = item.get(key)
-            if isinstance(value, str) and value:
-                return value
-    return ""
-
-
-def _opencode_tool_input(event: dict[str, Any]) -> dict[str, Any]:
-    for key in ("input", "arguments", "args"):
-        value = event.get(key)
-        if isinstance(value, dict):
-            return value
-    item = event.get("item")
-    if isinstance(item, dict):
-        if item.get("type") == "command_execution" and isinstance(item.get("command"), str):
-            return {"command": item["command"]}
-        for key in ("input", "arguments", "args"):
-            value = item.get(key)
-            if isinstance(value, dict):
-                return value
-    return {}
-
-
 def _tool_path(tool_input: dict[str, Any]) -> str:
     for key in ("file_path", "path", "filename"):
         value = tool_input.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
-
-
-def _opencode_tool_output(event: dict[str, Any]) -> str:
-    item = event.get("item")
-    if isinstance(item, dict):
-        for key in ("aggregated_output", "output", "stdout"):
-            value = item.get(key)
-            if isinstance(value, str) and value:
-                return value
-    for key in ("aggregated_output", "output", "stdout"):
-        value = event.get(key)
         if isinstance(value, str) and value:
             return value
     return ""

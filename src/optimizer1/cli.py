@@ -28,7 +28,6 @@ from optimizer1.longmemeval_optimizer import (
     LongMemEvalOptimizerConfig,
 )
 from optimizer1.model import DEFAULT_BASE_URL, DEFAULT_MODEL
-from optimizer1.claude_runner import DEFAULT_OPENCODE_MODEL
 from optimizer1.swebench import DEFAULT_MINI_SWE_AGENT_SOURCE_PATH
 from optimizer1.swebench_optimizer import SwebenchOptimizer, SwebenchOptimizerConfig
 from optimizer1.scaffolds import (
@@ -229,20 +228,12 @@ def main() -> int:
     optimize.add_argument("--eval-timeout-s", type=int, default=300)
     optimize.add_argument(
         "--proposer-agent",
-        choices=("opencode", "claude"),
-        default="opencode",
+        choices=("claude",),
+        default="claude",
         help=(
-            "Code agent used to generate candidates: 'opencode' (default, "
-            "any OpenAI-compatible provider) or 'claude' (Claude Code, "
-            "routable via ANTHROPIC_BASE_URL to DeepSeek/Kimi/etc.)."
-        ),
-    )
-    optimize.add_argument(
-        "--opencode-model",
-        default=DEFAULT_OPENCODE_MODEL,
-        help=(
-            "OpenCode model override in 'provider/model' form. "
-            f"Defaults to {DEFAULT_OPENCODE_MODEL!r}."
+            "Code agent used to generate candidates. Only 'claude' "
+            "(Claude Code, routable via ANTHROPIC_BASE_URL to "
+            "DeepSeek/Kimi/etc.) is supported."
         ),
     )
     optimize.add_argument(
@@ -656,7 +647,6 @@ def main() -> int:
                     api_key=args.api_key,
                     eval_timeout_s=args.eval_timeout_s,
                     proposer_agent=args.proposer_agent,
-                    opencode_model=args.opencode_model,
                     claude_model=args.claude_model,
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
@@ -713,7 +703,6 @@ def main() -> int:
                     api_key=args.api_key,
                     eval_timeout_s=args.eval_timeout_s,
                     proposer_agent=args.proposer_agent,
-                    opencode_model=args.opencode_model,
                     claude_model=args.claude_model,
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
@@ -768,7 +757,6 @@ def main() -> int:
                 api_key=args.api_key,
                 eval_timeout_s=args.eval_timeout_s,
                 proposer_agent=args.proposer_agent,
-                opencode_model=args.opencode_model,
                 claude_model=args.claude_model,
                 claude_base_url=args.claude_base_url,
                 claude_auth_token=args.claude_auth_token,

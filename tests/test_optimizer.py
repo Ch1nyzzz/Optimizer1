@@ -151,7 +151,7 @@ def test_default_proposer_accepts_top_level_candidate_list(tmp_path, monkeypatch
 
 
 def test_optimizer_rejects_unsupported_proposer_agent(tmp_path):
-    with pytest.raises(ValueError, match="Supported proposer agents"):
+    with pytest.raises(ValueError, match="Only the Claude Code proposer is supported"):
         LocomoOptimizer(
             LocomoOptimizerConfig(
                 run_id="r",
@@ -177,21 +177,36 @@ def test_optimizer_can_disable_default_docker_sandbox(tmp_path):
     "selection_policy",
     ["progressive", "bandit", "random", "recent", "best"],
 )
-def test_adaptive_selection_policies_allow_direct_opencode_init(tmp_path, selection_policy):
+def test_adaptive_selection_policies_allow_direct_init(tmp_path, selection_policy):
     optimizer = LocomoOptimizer(
         LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
             selection_policy=selection_policy,
-            proposer_sandbox="none",
+            proposer_sandbox="docker",
             proposer_docker_image="memo-proposer:test",
         )
     )
 
-    assert optimizer._proposer_sandbox_config() is None
+    sandbox = optimizer._proposer_sandbox_config()
+    assert sandbox is not None
+    assert sandbox.docker_image == "memo-proposer:test"
 
 
-def test_optimizer_uses_opencode_default_docker_image(tmp_path):
+def test_adaptive_selection_policies_require_docker_sandbox(tmp_path):
+    with pytest.raises(ValueError, match="requires --proposer-sandbox docker"):
+        LocomoOptimizer(
+            LocomoOptimizerConfig(
+                run_id="r",
+                out_dir=tmp_path,
+                selection_policy="progressive",
+                proposer_sandbox="none",
+                proposer_docker_image="memo-proposer:test",
+            )
+        )
+
+
+def test_optimizer_uses_default_docker_image(tmp_path):
     optimizer = LocomoOptimizer(
         LocomoOptimizerConfig(
             run_id="r",
@@ -204,16 +219,16 @@ def test_optimizer_uses_opencode_default_docker_image(tmp_path):
     sandbox = optimizer._proposer_sandbox_config()
 
     assert sandbox is not None
-    assert sandbox.docker_image == "docker-opencode:latest"
+    assert sandbox.docker_image == "docker-claude:latest"
 
 
-def test_optimizer_can_run_opencode_proposer_agent(tmp_path, monkeypatch):
+def test_optimizer_runs_claude_proposer_agent(tmp_path, monkeypatch):
     optimizer = LocomoOptimizer(
         LocomoOptimizerConfig(
             run_id="r",
             out_dir=tmp_path,
-            proposer_agent="opencode",
-            opencode_model="anthropic/claude-test",
+            proposer_agent="claude",
+            claude_model="claude-sonnet-4-6",
         )
     )
     captured = {}
@@ -238,30 +253,9 @@ def test_optimizer_can_run_opencode_proposer_agent(tmp_path, monkeypatch):
 
     optimizer._run_default_proposer_iteration(1, examples=[])
 
-    assert captured["agent"] == "opencode"
-    assert captured["model"] == "anthropic/claude-test"
+    assert captured["agent"] == "claude"
+    assert captured["model"] == "claude-sonnet-4-6"
     assert captured["sandbox"] is None
-
-
-@pytest.mark.parametrize(
-    "selection_policy",
-    ["progressive", "bandit", "random", "recent", "best", "curai", "curaii"],
-)
-def test_opencode_proposer_rejects_non_default_selection_policy(
-    tmp_path, monkeypatch, selection_policy
-):
-    optimizer = LocomoOptimizer(
-        LocomoOptimizerConfig(
-            run_id="r",
-            out_dir=tmp_path,
-            proposer_agent="opencode",
-            selection_policy=selection_policy,
-            proposer_docker_image="memo-proposer:test",
-        )
-    )
-    monkeypatch.setattr(optimizer, "_load_examples", lambda: [])
-    with pytest.raises(ValueError, match="opencode proposer currently supports"):
-        optimizer.run()
 
 
 def test_optimizer_rejects_baseline_with_mismatched_count(tmp_path, monkeypatch):
@@ -1141,6 +1135,7 @@ def test_random_and_recent_reference_selection_use_three_raw_iterations(tmp_path
             run_id="r",
             out_dir=tmp_path,
             selection_policy="recent",
+            proposer_sandbox="docker",
             proposer_docker_image="memo-proposer:test",
         )
     )
@@ -1155,6 +1150,7 @@ def test_random_and_recent_reference_selection_use_three_raw_iterations(tmp_path
             run_id="r",
             out_dir=tmp_path,
             selection_policy="random",
+            proposer_sandbox="docker",
             proposer_docker_image="memo-proposer:test",
         )
     )
@@ -1193,6 +1189,7 @@ def test_best_reference_selection_picks_top_three_by_passrate(tmp_path):
             run_id="r",
             out_dir=tmp_path,
             selection_policy="best",
+            proposer_sandbox="docker",
             proposer_docker_image="memo-proposer:test",
         )
     )
@@ -1455,6 +1452,7 @@ def test_recent_workspace_copies_only_three_selected_reference_iterations(tmp_pa
             run_id="r",
             out_dir=tmp_path,
             selection_policy="recent",
+            proposer_sandbox="docker",
             proposer_docker_image="memo-proposer:test",
         )
     )
@@ -2011,25 +2009,10 @@ def test_proposer_show_trace_harness_section_flag_controls_prompt_kwarg(
     assert captured["trace_harness_dir"] == expected_dir
 
 
-def test_write_proposer_agent_config_dispatches_by_agent(tmp_path):
-    """opencode → opencode.json; claude → .claude/settings.local.json."""
+def test_write_proposer_agent_config_writes_claude_settings(tmp_path):
+    """The Claude proposer's MCP entry lands in .claude/settings.local.json."""
 
-    optimizer_oc = LocomoOptimizer(
-        LocomoOptimizerConfig(
-            run_id="r-oc",
-            out_dir=tmp_path / "oc",
-            iterations=0,
-            proposer_docker_image="memo-proposer:test",
-            proposer_agent="opencode",
-        )
-    )
-    ws_oc = tmp_path / "oc" / "ws"
-    ws_oc.mkdir(parents=True)
-    optimizer_oc._write_proposer_agent_config(ws_oc)
-    assert (ws_oc / "opencode.json").exists()
-    assert not (ws_oc / ".claude" / "settings.local.json").exists()
-
-    optimizer_cc = LocomoOptimizer(
+    optimizer = LocomoOptimizer(
         LocomoOptimizerConfig(
             run_id="r-cc",
             out_dir=tmp_path / "cc",
@@ -2038,10 +2021,10 @@ def test_write_proposer_agent_config_dispatches_by_agent(tmp_path):
             proposer_agent="claude",
         )
     )
-    ws_cc = tmp_path / "cc" / "ws"
-    ws_cc.mkdir(parents=True)
-    optimizer_cc._write_proposer_agent_config(ws_cc)
-    settings = ws_cc / ".claude" / "settings.local.json"
+    ws = tmp_path / "cc" / "ws"
+    ws.mkdir(parents=True)
+    optimizer._write_proposer_agent_config(ws)
+    settings = ws / ".claude" / "settings.local.json"
     assert settings.exists()
     payload = json.loads(settings.read_text())
     assert "trace-tools" in payload["mcpServers"]
@@ -2063,7 +2046,6 @@ def test_write_proposer_agent_config_skipped_when_section_hidden(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     optimizer._write_proposer_agent_config(ws)
-    assert not (ws / "opencode.json").exists()
     assert not (ws / ".claude").exists()
 
 
@@ -2098,24 +2080,6 @@ def test_deploy_subagent_assets_writes_files_when_claude_diagnose(tmp_path):
     assert diagnoser_def.read_text(encoding="utf-8").startswith("---\nname: diagnoser\n")
     # workspace.md by design has no frontmatter — it's project context, not a subagent.
     assert not claudemd.read_text(encoding="utf-8").startswith("---\n")
-
-
-def test_deploy_subagent_assets_noop_for_opencode(tmp_path):
-    optimizer = LocomoOptimizer(
-        LocomoOptimizerConfig(
-            run_id="r",
-            out_dir=tmp_path,
-            iterations=0,
-            proposer_agent="opencode",
-            diagnose=True,
-        )
-    )
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    optimizer._deploy_subagent_assets(ws)
-    # OpenCode keeps the legacy prompt-string injection path.
-    assert not (ws / "CLAUDE.md").exists()
-    assert not (ws / ".claude" / "agents").exists()
 
 
 def test_deploy_subagent_assets_noop_when_diagnose_off(tmp_path):

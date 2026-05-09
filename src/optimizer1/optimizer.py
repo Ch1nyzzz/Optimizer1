@@ -1,4 +1,4 @@
-"""OpenCode-proposer optimization loop for OptiHarness."""
+"""Claude Code proposer optimization loop for OptiHarness."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from optimizer1.benchmark_workspaces import (
 )
 from optimizer1.claude_runner import (
     DEFAULT_DOCKER_ENV_VARS,
-    DEFAULT_OPENCODE_MODEL,
     ProposerSandboxConfig,
     _float_metric,
     _int_metric,
@@ -50,7 +49,7 @@ from optimizer1.scaffolds.base import ScaffoldConfig
 from optimizer1.schemas import CandidateResult, LocomoExample
 
 
-DEFAULT_PROPOSER_DOCKER_IMAGE = "docker-opencode:latest"
+DEFAULT_PROPOSER_DOCKER_IMAGE = "docker-claude:latest"
 
 
 def _pending_candidates(payload: Any) -> list[Any]:
@@ -67,7 +66,7 @@ def _pending_candidates(payload: Any) -> list[Any]:
 
 @dataclass(frozen=True)
 class OptimizerConfig:
-    """Configuration for the OpenCode proposer loop."""
+    """Configuration for the Claude Code proposer loop."""
 
     run_id: str
     out_dir: Path
@@ -78,8 +77,7 @@ class OptimizerConfig:
     base_url: str = DEFAULT_BASE_URL
     api_key: str = "EMPTY"
     eval_timeout_s: int = 300
-    proposer_agent: str = "opencode"
-    opencode_model: str = DEFAULT_OPENCODE_MODEL
+    proposer_agent: str = "claude"
     claude_model: str = "deepseek-v4-pro[1m]"
     claude_base_url: str = "https://api.deepseek.com/anthropic"
     claude_auth_token: str | None = None
@@ -182,35 +180,13 @@ class LocomoOptimizer:
 
     def _validate_proposer_agent(self) -> None:
         agent = self.config.proposer_agent.strip().lower()
-        if agent not in {"opencode", "claude"}:
+        if agent != "claude":
             raise ValueError(
-                "Supported proposer agents: 'opencode', 'claude'; got "
+                "Only the Claude Code proposer is supported; got "
                 f"proposer_agent={self.config.proposer_agent!r}"
             )
 
-    def _validate_proposer_selection_policy(self) -> None:
-        """Reject non-default selection policies before any iteration runs.
-
-        OpenCode is the only supported proposer in this Optimizer1 build,
-        and it is gated to ``selection_policy='default'``. The non-default
-        policies (progressive, bandit, random, recent, best, curai,
-        curaii) remain in the codebase for the internal helpers they
-        share with default mode but are not wired up for OpenCode in this
-        pass. Calling :meth:`run` with one of them raises so users fail
-        loudly instead of silently entering an unsupported branch.
-        """
-
-        policy = self.config.selection_policy.strip().lower()
-        if policy != "default":
-            raise ValueError(
-                "opencode proposer currently supports only "
-                "selection_policy='default'; got "
-                f"selection_policy={self.config.selection_policy!r}"
-            )
-
     def _validate_proposer_sandbox_policy(self) -> None:
-        if self.config.proposer_agent.strip().lower() == "opencode":
-            return
         policy = self.config.selection_policy.strip().lower()
         if policy not in {"progressive", "bandit", "random", "recent", "best", "curai", "curaii"}:
             return
@@ -225,7 +201,6 @@ class LocomoOptimizer:
             )
 
     def run(self) -> dict[str, Any]:
-        self._validate_proposer_selection_policy()
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_package_dirs(self.generated_dir)
         examples = self._load_examples()
@@ -940,9 +915,9 @@ class LocomoOptimizer:
             edit scope, pending_eval.json conventions, etc. — not
             anyone's role).
 
-        No-op for OpenCode and for runs where the diagnoser is not
-        enabled — those paths still rely on the legacy prompt-string
-        injection through ``load_role_prompt``.
+        No-op for runs where the diagnoser is not enabled — that path
+        still relies on the legacy prompt-string injection through
+        ``load_role_prompt``.
         """
 
         if not self._uses_claude_subagent_diagnoser():
@@ -971,26 +946,19 @@ class LocomoOptimizer:
                 )
 
     def _write_proposer_agent_config(self, workspace_dir: Path) -> None:
-        """Register the trace MCP server in the proposer's agent config.
+        """Register the trace MCP server in the Claude proposer's settings.
 
-        Dispatches by ``proposer_agent``:
-        - ``opencode`` → ``<workspace>/opencode.json``  (mcp section)
-        - ``claude``   → ``<workspace>/.claude/settings.local.json`` (mcpServers)
-
-        Skipped when the proposer prompt's trace-harness section is
-        suppressed — under that ablation we want the proposer to have
-        no access to trace tools at all.
+        Writes ``<workspace>/.claude/settings.local.json`` with an
+        ``mcpServers`` entry. Skipped when the proposer prompt's
+        trace-harness section is suppressed — under that ablation we
+        want the proposer to have no access to trace tools at all.
         """
 
         if not self.config.proposer_show_trace_harness_section:
             return
         env = self._mcp_server_env(workspace_dir)
         cmd_argv = [sys.executable, "-m", "optimizer1.traces.mcp_server"]
-        agent = self.config.proposer_agent.strip().lower()
-        if agent == "claude":
-            self._write_claude_settings(workspace_dir, cmd_argv=cmd_argv, env=env)
-        else:
-            self._write_opencode_config(workspace_dir, cmd_argv=cmd_argv, env=env)
+        self._write_claude_settings(workspace_dir, cmd_argv=cmd_argv, env=env)
 
     def _mcp_server_env(self, workspace_dir: Path) -> dict[str, str]:
         env: dict[str, str] = {
@@ -1004,30 +972,6 @@ class LocomoOptimizer:
             if value:
                 env[key] = value
         return env
-
-    def _write_opencode_config(
-        self,
-        workspace_dir: Path,
-        *,
-        cmd_argv: list[str],
-        env: dict[str, str],
-    ) -> None:
-        config = {
-            "$schema": "https://opencode.ai/config.json",
-            "mcp": {
-                "trace-tools": {
-                    "type": "local",
-                    "command": cmd_argv,
-                    "environment": env,
-                    "enabled": True,
-                }
-            },
-        }
-        path = workspace_dir / "opencode.json"
-        path.write_text(
-            json.dumps(config, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
 
     def _write_claude_settings(
         self,
@@ -1496,20 +1440,17 @@ class LocomoOptimizer:
             name=name,
             timeout_s=self.config.propose_timeout_s,
             sandbox=self._proposer_sandbox_config(),
+            model=self.config.claude_model,
+            claude_base_url=self.config.claude_base_url,
+            claude_auth_token=self.config.claude_auth_token,
         )
-        if agent == "claude":
-            kwargs["model"] = self.config.claude_model
-            kwargs["claude_base_url"] = self.config.claude_base_url
-            kwargs["claude_auth_token"] = self.config.claude_auth_token
-            # In subagent mode the proposer runs as the named
-            # `.claude/agents/proposer.md` subagent — its frontmatter
-            # supplies the system prompt and tool allowlist, so the
-            # role / identity text never enters the user message. The
-            # diagnoser is reached from there via the Task tool.
-            if self._uses_claude_subagent_diagnoser() and name == "proposer":
-                kwargs["claude_agent_name"] = "proposer"
-        else:
-            kwargs["model"] = self.config.opencode_model
+        # In subagent mode the proposer runs as the named
+        # `.claude/agents/proposer.md` subagent — its frontmatter
+        # supplies the system prompt and tool allowlist, so the
+        # role / identity text never enters the user message. The
+        # diagnoser is reached from there via the Task tool.
+        if self._uses_claude_subagent_diagnoser() and name == "proposer":
+            kwargs["claude_agent_name"] = "proposer"
         return run_code_agent_prompt(prompt, agent=agent, **kwargs)
 
     def _diagnoser_cache_key(

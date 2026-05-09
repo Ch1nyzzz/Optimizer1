@@ -1,9 +1,9 @@
 """MCP server exposing trace-harness queries as first-class tools.
 
-Run as ``python -m optimizer1.traces.mcp_server``. The OpenCode launcher
-registers this server in ``<workspace>/opencode.json`` so the proposer
-agent can call the tools the same way it calls built-in tools (read,
-grep, bash, ...).
+Run as ``python -m optimizer1.traces.mcp_server``. The optimizer
+registers this server in ``<workspace>/.claude/settings.local.json``
+so the Claude Code proposer can call the tools the same way it calls
+built-in tools (Read, Grep, Bash, ...).
 
 The DB path comes from the ``TRACE_DB`` environment variable (set by
 the launcher). All tools are read-only.
@@ -176,7 +176,7 @@ def _status_counts_for(db_path: Path, iteration: int) -> dict[str, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # FastMCP runs over stdio by default; OpenCode launches us as a
+    # FastMCP runs over stdio by default; Claude Code launches us as a
     # subprocess and speaks JSON-RPC on stdin/stdout.
     mcp.run()
     return 0

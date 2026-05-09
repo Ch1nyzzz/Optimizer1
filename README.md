@@ -142,14 +142,14 @@ Key outputs:
 - `runs/baselines/test/repeat_01/run_summary.json`
 - `runs/baselines/<split>/repeat_<NN>/candidate_results/*.json`
 
-## Run OpenCode Proposer Optimization
+## Run Claude Code Proposer Optimization
 
 This is the real optimization loop. It follows the `skillevolve` /
 `meta-harness` pattern:
 
 1. evaluate built-in scaffold candidates as iteration 0,
-2. call `opencode run` to propose new candidate memory-scaffold code,
-3. require OpenCode to write `pending_eval.json`,
+2. call `claude -p` to propose new candidate memory-scaffold code,
+3. require the Claude Code session to write `pending_eval.json`,
 4. import and evaluate those candidates,
 5. update `best_candidates.json` by highest `passrate`.
 
