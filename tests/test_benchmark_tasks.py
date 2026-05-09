@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from memomemo.benchmark_tasks import normalize_task_name, task_spec
+from optimizer1.benchmark_tasks import normalize_task_name, task_spec
 
 
 def test_benchmark_task_aliases_normalize_to_canonical_slugs() -> None:

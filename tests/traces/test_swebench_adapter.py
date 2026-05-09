@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from memomemo.traces import get_adapter, has_adapter
-from memomemo.traces.adapters.swebench import SwebenchAdapter
+from optimizer1.traces import get_adapter, has_adapter
+from optimizer1.traces.adapters.swebench import SwebenchAdapter
 
 
 def _sample_task(*, passed: bool = False) -> dict:
@@ -80,11 +80,11 @@ def test_agent_span_carries_pointer_to_task_dir():
     assert span.metadata["repo"] == "astropy/astropy"
 
 
-def test_swebench_optimizer_can_init_under_harness_backend(tmp_path):
-    """Sanity: SwebenchOptimizer with --trace-backend=harness no longer
-    raises 'no adapter registered for swebench'."""
+def test_swebench_optimizer_constructs_trace_harness(tmp_path):
+    """Sanity: SwebenchOptimizer constructs a TraceHarness backed by the
+    registered swebench adapter."""
 
-    from memomemo.swebench_optimizer import (
+    from optimizer1.swebench_optimizer import (
         SwebenchOptimizer,
         SwebenchOptimizerConfig,
     )
@@ -94,8 +94,6 @@ def test_swebench_optimizer_can_init_under_harness_backend(tmp_path):
         out_dir=tmp_path,
         iterations=0,
         proposer_docker_image="test",
-        trace_backend="harness",
     )
     optimizer = SwebenchOptimizer(cfg)
-    assert optimizer.trace_harness is not None
     assert optimizer.trace_harness.benchmark == "swebench"

@@ -31,7 +31,7 @@ run_job() {
 }
 
 wait_for_slot() {
-  local pattern="python -m memomemo.cli optimize .*claudekimi_.*(3_fileaccess|bandit_v4_autobudget).*_${timestamp}"
+  local pattern="python -m optimizer1.cli optimize .*claudekimi_.*(3_fileaccess|bandit_v4_autobudget).*_${timestamp}"
   while [ "$(pgrep -af "$pattern" | wc -l)" -ge "$max_parallel" ]; do
     sleep 30
   done
@@ -54,7 +54,7 @@ miniswe_run_command="python /data/home/yuhan/MemoMemo/scripts/run_miniswe_sweben
 miniswe_eval_command="python /data/home/yuhan/MemoMemo/scripts/run_miniswe_swebench_single.py eval --source-path {source_path} --instance-path {instance_path} --patch-path {patch_path} --task-dir {task_dir}"
 
 miniswe_common=(
-  python -m memomemo.cli optimize
+  python -m optimizer1.cli optimize
   --swebench
   --iterations 20
   --split train

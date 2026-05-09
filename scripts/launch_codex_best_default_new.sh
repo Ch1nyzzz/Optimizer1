@@ -31,7 +31,7 @@ run_job() {
 }
 
 wait_for_slot() {
-  local pattern="python -m memomemo.cli optimize .*codex54_(best3_fileaccess|default_new).*_${timestamp}"
+  local pattern="python -m optimizer1.cli optimize .*codex54_(best3_fileaccess|default_new).*_${timestamp}"
   while [ "$(pgrep -af "$pattern" | wc -l)" -ge "$max_parallel" ]; do
     sleep 30
   done
@@ -51,7 +51,7 @@ start_job() {
 pids=()
 
 memory_common=(
-  python -m memomemo.cli optimize
+  python -m optimizer1.cli optimize
   --iterations 30
   --split train
   --scaffolds memgpt_source

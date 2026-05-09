@@ -47,7 +47,7 @@ start_job() {
 pids=()
 
 memory_common=(
-  python -m memomemo.cli optimize
+  python -m optimizer1.cli optimize
   --iterations 30
   --split train
   --scaffolds memgpt_source

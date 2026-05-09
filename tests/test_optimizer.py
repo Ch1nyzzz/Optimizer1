@@ -2,14 +2,14 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from memomemo.benchmark_workspaces import (
+from optimizer1.benchmark_workspaces import (
     LOCOMO_WORKSPACE_SPEC,
     MINIMAL_BENCHMARK_PACKAGE_INIT,
 )
-from memomemo import optimizer as optimizer_module
-from memomemo.locomo_optimizer import LocomoOptimizer, LocomoOptimizerConfig
-from memomemo.optimizer import _single_top_k
-from memomemo.schemas import CandidateResult
+from optimizer1 import optimizer as optimizer_module
+from optimizer1.locomo_optimizer import LocomoOptimizer, LocomoOptimizerConfig
+from optimizer1.optimizer import _single_top_k
+from optimizer1.schemas import CandidateResult
 import pytest
 
 
@@ -58,9 +58,9 @@ def test_default_proposer_evaluates_only_one_candidate(tmp_path, monkeypatch):
     assert "Optimization Focus" not in captured["prompt"]
     assert "mechanism directions" not in captured["prompt"]
     snapshot = tmp_path / "proposer_calls" / "iter_001" / "source_snapshot" / "candidate"
-    assert (snapshot / "project_source" / "src" / "memomemo" / "dynamic.py").exists()
-    assert (snapshot / "project_source" / "src" / "memomemo" / "scaffolds" / "base.py").exists()
-    assert not (snapshot / "project_source" / "src" / "memomemo" / "optimizer.py").exists()
+    assert (snapshot / "project_source" / "src" / "optimizer1" / "dynamic.py").exists()
+    assert (snapshot / "project_source" / "src" / "optimizer1" / "scaffolds" / "base.py").exists()
+    assert not (snapshot / "project_source" / "src" / "optimizer1" / "optimizer.py").exists()
     assert (snapshot / "upstream_source" / "MemGPT" / "letta" / "schemas" / "memory.py").exists()
     assert "candidate_count_adjusted" in optimizer.summary_path.read_text(
         encoding="utf-8"
@@ -300,72 +300,13 @@ def test_optimizer_rejects_baseline_with_mismatched_count(tmp_path, monkeypatch)
         optimizer.run()
 
 
-def test_run_writes_initial_trace_slices(tmp_path, monkeypatch):
-    optimizer = LocomoOptimizer(
-        LocomoOptimizerConfig(
-            run_id="r",
-            out_dir=tmp_path,
-            iterations=0,
-            proposer_docker_image="memo-proposer:test",
-        )
-    )
-    result_path = tmp_path / "candidate_results" / "seed.json"
-    candidate = CandidateResult(
-        candidate_id="seed",
-        scaffold_name="memgpt_source",
-        passrate=0.0,
-        average_score=0.0,
-        token_consuming=10,
-        avg_token_consuming=5,
-        avg_prompt_tokens=4,
-        avg_completion_tokens=1,
-        count=1,
-        config={"top_k": 8, "extra": {"source_family": "memgpt"}},
-        result_path=str(result_path),
-    )
-
-    def fake_run_initial_frontier(*args, **kwargs):
-        result_path.parent.mkdir(parents=True, exist_ok=True)
-        result_path.write_text(
-            json.dumps(
-                {
-                    "candidate": candidate.to_dict(),
-                    "tasks": [
-                        {
-                            "task_id": "hard-case",
-                            "question": "question",
-                            "gold_answer": "gold",
-                            "prediction": "pred",
-                            "score": 0.0,
-                            "passed": False,
-                            "prompt_tokens": 1,
-                            "completion_tokens": 1,
-                            "retrieved": [],
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
-        )
-        return {"candidates": [candidate.to_dict()]}
-
-    monkeypatch.setattr(optimizer, "_load_examples", lambda: [object()])
-    monkeypatch.setattr(optimizer_module, "run_initial_frontier", fake_run_initial_frontier)
-
-    optimizer.run()
-
-    low = json.loads((tmp_path / "trace_slices" / "low" / "seed.json").read_text())
-    assert low["case_limit"] == 10
-    assert low["cases"][0]["task_id"] == "hard-case"
-
-
 def test_candidate_code_policy_rejects_runtime_trace_and_scorer_access(tmp_path):
     generated = tmp_path / "generated"
     generated.mkdir()
     (generated / "bad_candidate.py").write_text(
         "\n".join(
             [
-                "from memomemo.metrics import score_prediction",
+                "from optimizer1.metrics import score_prediction",
                 "",
                 "def leak():",
                 "    return open('runs/r/candidate_results/iter001.json').read()",
@@ -391,7 +332,7 @@ def test_candidate_code_policy_rejects_runtime_trace_and_scorer_access(tmp_path)
 
 def test_candidate_code_policy_rejects_raw_locomo_access_in_source_snapshot(tmp_path):
     project_source = tmp_path / "snap" / "candidate" / "project_source"
-    scaffold_dir = project_source / "src" / "memomemo" / "scaffolds"
+    scaffold_dir = project_source / "src" / "optimizer1" / "scaffolds"
     scaffold_dir.mkdir(parents=True)
     (scaffold_dir / "memgpt_scaffold.py").write_text(
         "from pathlib import Path\nPath('data/locomo/locomo10.json').read_text()\n",
@@ -413,10 +354,10 @@ def test_source_candidate_policy_allows_preexisting_scorer_import(tmp_path):
     candidate_source = tmp_path / "snap" / "candidate" / "project_source"
     original_source = tmp_path / "snap" / "candidate" / "original_project_source"
     for root in (candidate_source, original_source):
-        scaffold_dir = root / "src" / "memomemo" / "scaffolds"
+        scaffold_dir = root / "src" / "optimizer1" / "scaffolds"
         scaffold_dir.mkdir(parents=True)
         (scaffold_dir / "base.py").write_text(
-            "from memomemo.metrics import retrieval_oracle_prediction\n",
+            "from optimizer1.metrics import retrieval_oracle_prediction\n",
             encoding="utf-8",
         )
     optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
@@ -435,14 +376,14 @@ def test_source_candidate_policy_rejects_new_scorer_import(tmp_path):
     candidate_source = tmp_path / "snap" / "candidate" / "project_source"
     original_source = tmp_path / "snap" / "candidate" / "original_project_source"
     for root in (candidate_source, original_source):
-        scaffold_dir = root / "src" / "memomemo" / "scaffolds"
+        scaffold_dir = root / "src" / "optimizer1" / "scaffolds"
         scaffold_dir.mkdir(parents=True)
         (scaffold_dir / "base.py").write_text(
             "class BaseMemoryScaffold:\n    pass\n",
             encoding="utf-8",
         )
-    (candidate_source / "src" / "memomemo" / "scaffolds" / "memgpt_scaffold.py").write_text(
-        "from memomemo.metrics import retrieval_oracle_prediction\n",
+    (candidate_source / "src" / "optimizer1" / "scaffolds" / "memgpt_scaffold.py").write_text(
+        "from optimizer1.metrics import retrieval_oracle_prediction\n",
         encoding="utf-8",
     )
     optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
@@ -454,7 +395,7 @@ def test_source_candidate_policy_rejects_new_scorer_import(tmp_path):
         }
     )
 
-    assert any(item["marker"] == "memomemo.metrics" for item in violations)
+    assert any(item["marker"] == "optimizer1.metrics" for item in violations)
 
 
 def test_single_top_k_uses_first_value_from_list():
@@ -473,17 +414,17 @@ def test_optimizer_copies_declared_locomo_source_scope(tmp_path):
     manifest = json.loads((dest / "project_source_manifest.json").read_text(encoding="utf-8"))
     assert manifest["benchmark"] == LOCOMO_WORKSPACE_SPEC.benchmark
     assert sorted(manifest["source_files"]) == sorted(LOCOMO_WORKSPACE_SPEC.source_files)
-    assert (dest / "project_source" / "src" / "memomemo" / "dynamic.py").exists()
+    assert (dest / "project_source" / "src" / "optimizer1" / "dynamic.py").exists()
     assert (
-        dest / "project_source" / "src" / "memomemo" / "__init__.py"
+        dest / "project_source" / "src" / "optimizer1" / "__init__.py"
     ).read_text(encoding="utf-8") == MINIMAL_BENCHMARK_PACKAGE_INIT
-    assert not (dest / "project_source" / "src" / "memomemo" / "scaffolds" / "mem0_scaffold.py").exists()
-    assert (dest / "project_source" / "src" / "memomemo" / "scaffolds" / "memgpt_scaffold.py").exists()
-    assert not (dest / "project_source" / "src" / "memomemo" / "optimizer.py").exists()
-    assert not (dest / "project_source" / "src" / "memomemo" / "baseline.py").exists()
-    assert not (dest / "project_source" / "src" / "memomemo" / "tau_banking.py").exists()
-    assert not (dest / "project_source" / "src" / "memomemo" / "tau_agents").exists()
-    assert not (dest / "project_source" / "src" / "memomemo" / "text_classification.py").exists()
+    assert not (dest / "project_source" / "src" / "optimizer1" / "scaffolds" / "mem0_scaffold.py").exists()
+    assert (dest / "project_source" / "src" / "optimizer1" / "scaffolds" / "memgpt_scaffold.py").exists()
+    assert not (dest / "project_source" / "src" / "optimizer1" / "optimizer.py").exists()
+    assert not (dest / "project_source" / "src" / "optimizer1" / "baseline.py").exists()
+    assert not (dest / "project_source" / "src" / "optimizer1" / "tau_banking.py").exists()
+    assert not (dest / "project_source" / "src" / "optimizer1" / "tau_agents").exists()
+    assert not (dest / "project_source" / "src" / "optimizer1" / "text_classification.py").exists()
     assert not (dest / "upstream_source" / "mem0").exists()
     assert (dest / "upstream_source" / "MemGPT" / "letta" / "schemas" / "memory.py").exists()
     assert not (dest / "upstream_source" / "MemoryBank-SiliconFriend").exists()
@@ -508,7 +449,6 @@ def test_source_snapshot_uses_single_candidate_dir(tmp_path):
     assert manifest["benchmark"] == LOCOMO_WORKSPACE_SPEC.benchmark
     assert manifest["primary_source_file"] == LOCOMO_WORKSPACE_SPEC.primary_source_file
     assert sorted(manifest["project_source_files"]) == sorted(LOCOMO_WORKSPACE_SPEC.source_files)
-    assert "trace_scope" not in manifest
     assert "optimization_cell" not in manifest
     assert "cost_level" not in manifest
     assert "slots" not in manifest
@@ -730,33 +670,6 @@ def test_curaii_handles_fewer_than_three_eligible(tmp_path, monkeypatch):
     )
     assert base_iter in {1, 2}
     assert refs == (1, 2)
-
-
-def test_reference_bundle_prunes_trace_slices_to_budget_access(tmp_path):
-    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
-    src = tmp_path / "proposer_calls" / "iter_001"
-    for level in ("low", "medium", "high"):
-        trace_dir = src / "trace_slices" / level
-        trace_dir.mkdir(parents=True, exist_ok=True)
-        (trace_dir / "candidate.json").write_text("{}", encoding="utf-8")
-
-    low_dest = tmp_path / "low_bundle"
-    optimizer._copy_iteration_bundle(src, low_dest, trace_scope="last1")
-    assert (low_dest / "trace_slices" / "low" / "candidate.json").exists()
-    assert not (low_dest / "trace_slices" / "medium").exists()
-    assert not (low_dest / "trace_slices" / "high").exists()
-
-    medium_dest = tmp_path / "medium_bundle"
-    optimizer._copy_iteration_bundle(src, medium_dest, trace_scope="last3")
-    assert not (medium_dest / "trace_slices" / "low").exists()
-    assert (medium_dest / "trace_slices" / "medium" / "candidate.json").exists()
-    assert not (medium_dest / "trace_slices" / "high").exists()
-
-    high_dest = tmp_path / "high_bundle"
-    optimizer._copy_iteration_bundle(src, high_dest, trace_scope="all")
-    assert (high_dest / "trace_slices" / "low" / "candidate.json").exists()
-    assert (high_dest / "trace_slices" / "medium" / "candidate.json").exists()
-    assert (high_dest / "trace_slices" / "high" / "candidate.json").exists()
 
 
 def test_append_summary_writes_only_global_summary(tmp_path):
@@ -1459,11 +1372,6 @@ def test_progressive_workspace_copies_full_summaries_and_selected_raw_refs(tmp_p
             "{}",
             encoding="utf-8",
         )
-        (call_dir / "trace_slices" / "low").mkdir(parents=True)
-        (call_dir / "trace_slices" / "low" / "candidate.json").write_text(
-            "{}",
-            encoding="utf-8",
-        )
 
     candidates = [
         _scored_candidate("iter001_best_top8", passrate=0.8),
@@ -1495,7 +1403,7 @@ def test_progressive_workspace_copies_full_summaries_and_selected_raw_refs(tmp_p
         / "candidate"
         / "original_project_source"
         / "src"
-        / "memomemo"
+        / "optimizer1"
         / "dynamic.py"
     ).exists()
     assert (workspace / "workspace_manifest.json").exists()
@@ -1531,7 +1439,6 @@ def test_default_high_budget_workspace_copies_all_reference_iterations(tmp_path)
     assert refs == (1, 2, 3)
     assignment = json.loads((workspace / "assignment.json").read_text(encoding="utf-8"))
     assert assignment["budget"] == "high"
-    assert assignment["trace_scope"] == "all"
     for iteration in refs:
         assert (
             workspace
@@ -1591,12 +1498,10 @@ def test_bandit_first_iteration_bootstraps_workspace_and_access_advisory(tmp_pat
         existing_candidates=[],
         call_dir=tmp_path / "proposer_calls" / "iter_001",
         reference_iterations_override=tuple(policy["reference_iterations"]),
-        trace_scope_override=policy["trace_scope"],
         bandit_policy=policy,
     )
 
     assert policy["budget"] == "low"
-    assert policy["trace_scope"] == "last1"
     assert refs == ()
     assignment = json.loads((workspace / "assignment.json").read_text(encoding="utf-8"))
     assert assignment["bandit_policy"]["hot_files"]
@@ -1618,13 +1523,13 @@ def test_bandit_state_updates_file_rewards_and_policy_scores(tmp_path):
             {
                 "files_read": {
                     "summaries/candidate_score_table.json": {"reads": 1, "lines": 40},
-                    "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py": {
+                    "source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py": {
                         "reads": 2,
                         "lines": 220,
                     },
                 },
                 "files_written": {
-                    "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py": {
+                    "source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py": {
                         "writes": 1
                     }
                 },
@@ -1633,8 +1538,8 @@ def test_bandit_state_updates_file_rewards_and_policy_scores(tmp_path):
         encoding="utf-8",
     )
     (call_dir / "diff.patch").write_text(
-        "diff --git a/src/memomemo/scaffolds/memgpt_scaffold.py "
-        "b/src/memomemo/scaffolds/memgpt_scaffold.py\n",
+        "diff --git a/src/optimizer1/scaffolds/memgpt_scaffold.py "
+        "b/src/optimizer1/scaffolds/memgpt_scaffold.py\n",
         encoding="utf-8",
     )
 
@@ -1648,7 +1553,7 @@ def test_bandit_state_updates_file_rewards_and_policy_scores(tmp_path):
 
     state = json.loads(optimizer.bandit_state_path.read_text(encoding="utf-8"))
     source = state["files"][
-        "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py"
+        "source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py"
     ]
     assert state["total_iters"] == 1
     assert state["success_iters"] == 1
@@ -1693,7 +1598,7 @@ def test_bandit_failed_proposer_records_read_cost_without_success(tmp_path):
 def test_bandit_iters_from_policy_paths_extracts_reference_iterations(tmp_path):
     optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     paths = [
-        "source_snapshot/candidate/project_source/src/memomemo/model.py",
+        "source_snapshot/candidate/project_source/src/optimizer1/model.py",
         "reference_iterations/iter_017/pending_eval.json",
         "reference_iterations/iter_005/eval/retrieval_diagnostics.json",
         "reference_iterations/iter_017/diff.patch",   # duplicate iter
@@ -1718,7 +1623,6 @@ def test_bandit_policy_high_budget_after_long_stagnation(tmp_path):
     policy = optimizer._bandit_policy_for_workspace(iteration=13, candidates=candidates)
 
     assert policy["budget"] == "high"
-    assert policy["trace_scope"] == "all"
     assert sorted(policy["reference_iterations"]) == list(range(1, 13))
     assert policy["cold_files"] == []
 
@@ -1734,7 +1638,7 @@ def test_bandit_policy_hot_paths_drive_reference_selection(tmp_path):
                     "reference_iterations/iter_004/pending_eval.json": {"policy_score": 0.3},
                     "reference_iterations/iter_002/diff.patch": {"policy_score": 0.2},
                     "reference_iterations/iter_001/pending_eval.json": {"policy_score": 0.1},
-                    "source_snapshot/candidate/project_source/src/memomemo/model.py": {
+                    "source_snapshot/candidate/project_source/src/optimizer1/model.py": {
                         "policy_score": 0.05
                     },
                 },
@@ -1820,7 +1724,7 @@ def test_bandit_state_normalizes_diff_host_paths(tmp_path):
         json.dumps(
             {
                 "files_read": {
-                    "/workspace/source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py": {
+                    "/workspace/source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py": {
                         "reads": 1,
                         "lines": 220,
                     },
@@ -1830,8 +1734,8 @@ def test_bandit_state_normalizes_diff_host_paths(tmp_path):
         encoding="utf-8",
     )
     (call_dir / "diff.patch").write_text(
-        "diff --git a/runs/r/proposer_calls/iter_001/source_snapshot/candidate/original_project_source/src/memomemo/scaffolds/memgpt_scaffold.py "
-        "b/runs/r/proposer_calls/iter_001/source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py\n",
+        "diff --git a/runs/r/proposer_calls/iter_001/source_snapshot/candidate/original_project_source/src/optimizer1/scaffolds/memgpt_scaffold.py "
+        "b/runs/r/proposer_calls/iter_001/source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py\n",
         encoding="utf-8",
     )
 
@@ -1845,7 +1749,7 @@ def test_bandit_state_normalizes_diff_host_paths(tmp_path):
     state = json.loads(optimizer.bandit_state_path.read_text(encoding="utf-8"))
     keys = list(state["files"].keys())
     assert all(not key.startswith("runs/") for key in keys), keys
-    target_key = "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py"
+    target_key = "source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py"
     assert target_key in state["files"], keys
     row = state["files"][target_key]
     assert row["changed_iters"] == 1
@@ -1861,11 +1765,11 @@ def test_bandit_state_ignores_non_path_shell_arguments(tmp_path):
             {
                 "files_read": {
                     "summaries/candidate_score_table.json": {"reads": 1, "lines": 20},
-                    "src/memomemo/scaffolds/memgpt_scaffold.py": {
+                    "src/optimizer1/scaffolds/memgpt_scaffold.py": {
                         "reads": 1,
                         "lines": 220,
                     },
-                    "memomemo/scaffolds/memgpt_scaffold.py": {
+                    "optimizer1/scaffolds/memgpt_scaffold.py": {
                         "reads": 1,
                         "lines": 220,
                     },
@@ -1884,7 +1788,7 @@ def test_bandit_state_ignores_non_path_shell_arguments(tmp_path):
                     },
                 },
                 "files_written": {
-                    "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py": {
+                    "source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py": {
                         "writes": 1
                     },
                     ".foo | @json": {"writes": 1},
@@ -1905,13 +1809,13 @@ def test_bandit_state_ignores_non_path_shell_arguments(tmp_path):
     state = json.loads(optimizer.bandit_state_path.read_text(encoding="utf-8"))
     assert "summaries/candidate_score_table.json" in state["files"]
     assert (
-        "source_snapshot/candidate/project_source/src/memomemo/scaffolds/memgpt_scaffold.py"
+        "source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py"
         in state["files"]
     )
     assert not any("failed_tasks[]" in path for path in state["files"])
     assert not any("select(.iteration" in path for path in state["files"])
-    assert not any(path.startswith("src/memomemo/") for path in state["files"])
-    assert not any(path.startswith("memomemo/") for path in state["files"])
+    assert not any(path.startswith("src/optimizer1/") for path in state["files"])
+    assert not any(path.startswith("optimizer1/") for path in state["files"])
     assert not any(".claude/projects" in path for path in state["files"])
     assert "s/$/\\n/" not in state["files"]
     assert ".foo | @json" not in state["files"]
@@ -1941,7 +1845,7 @@ def test_optimizer_records_and_aggregates_proposer_metrics(tmp_path):
             "written_lines": 7,
         },
         tool_access={
-            "files_read": {"src/memomemo/optimizer.py": {"reads": 2, "lines": 42}},
+            "files_read": {"src/optimizer1/optimizer.py": {"reads": 2, "lines": 42}},
             "files_written": {"runs/r/generated/candidate.py": {"writes": 1, "lines_written": 7}},
             "grep_requests": [],
             "tool_counts": {"Read": 2, "Write": 1, "Bash": 1},
@@ -1959,7 +1863,7 @@ def test_optimizer_records_and_aggregates_proposer_metrics(tmp_path):
     aggregate = optimizer._aggregate_proposer_metrics()
 
     assert row["event"] == "proposer_result"
-    assert row["files_read"] == {"src/memomemo/optimizer.py": {"reads": 2, "lines": 42}}
+    assert row["files_read"] == {"src/optimizer1/optimizer.py": {"reads": 2, "lines": 42}}
     assert aggregate["calls"] == 1
     assert aggregate["estimated_cost_usd"] == 0.25
     assert aggregate["input_tokens"] == 100

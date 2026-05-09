@@ -6,7 +6,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from memomemo.traces import Baseline, Span, Trace, write_jsonl
+from optimizer1.traces import Baseline, Span, Trace, write_jsonl
 
 
 def _trace(*, task_id: str, passed: bool, score: float, candidate_id: str = "bl") -> Trace:

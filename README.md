@@ -203,7 +203,7 @@ The harness writes proposer/eval artifacts under:
 - `runs/<run-id>/pending_eval.json`
 - `runs/<run-id>/reports/`
 - `runs/<run-id>/candidate_results/`
-- `runs/<run-id>/trace_slices/`
+- `runs/<run-id>/traces/` (manifest, `spans/iter_NNN/<candidate>.jsonl`, `index.db`, pre-rendered `diagnostic/iter_NNN.md` per iteration)
 - `runs/<run-id>/evolution_summary.jsonl`
 - `runs/<run-id>/best_candidates.json`
 - `runs/<run-id>/candidate_score_table.json`

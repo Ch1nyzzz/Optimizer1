@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 
-from memomemo.swebench import (
+from optimizer1.swebench import (
     DEFAULT_MINI_SWE_AGENT_NAME,
     SwebenchInstance,
     _format_command,
     load_swebench_instances,
     run_swebench_frontier,
 )
-from memomemo.swebench_optimizer import SwebenchOptimizer, SwebenchOptimizerConfig
+from optimizer1.swebench_optimizer import SwebenchOptimizer, SwebenchOptimizerConfig
 
 
 def test_load_swebench_instances_from_jsonl_selects_split_and_limit(tmp_path) -> None:

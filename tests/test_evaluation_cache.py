@@ -1,10 +1,10 @@
 from collections import Counter
 from typing import Any
 
-from memomemo.evaluation import EvaluationRunner
-from memomemo.schemas import ConversationTurn, LocomoExample, RetrievalHit
-from memomemo.model import LocalModelClient
-from memomemo.scaffolds.base import RetrievalMemoryScaffold, ScaffoldConfig, ScaffoldRun
+from optimizer1.evaluation import EvaluationRunner
+from optimizer1.schemas import ConversationTurn, LocomoExample, RetrievalHit
+from optimizer1.model import LocalModelClient
+from optimizer1.scaffolds.base import RetrievalMemoryScaffold, ScaffoldConfig, ScaffoldRun
 
 
 def test_source_family_build_cache_is_disabled_for_memgpt_only_build(tmp_path) -> None:

@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from memomemo.swebench import (
+from optimizer1.swebench import (
     DEFAULT_MINI_SWE_AGENT_NAME,
     MiniSweAgentSourceRunner,
     load_swebench_instances,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from memomemo.traces import (
+from optimizer1.traces import (
     Span,
     Trace,
     read_jsonl,

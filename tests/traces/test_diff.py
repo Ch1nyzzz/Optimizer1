@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from memomemo.traces import (
+from optimizer1.traces import (
     STATUS_BREAKTHROUGH,
     STATUS_NO_BASELINE,
     STATUS_PERSISTENT_FAIL,

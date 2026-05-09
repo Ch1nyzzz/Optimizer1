@@ -1,6 +1,6 @@
 import json
 
-from memomemo.baseline import load_baseline_candidates
+from optimizer1.baseline import load_baseline_candidates
 
 
 def test_load_baseline_candidates_filters_split(tmp_path):

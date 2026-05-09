@@ -1,5 +1,5 @@
-from memomemo.pareto import ParetoPoint, pareto_frontier
-from memomemo.optimizer import OptimizerConfig
+from optimizer1.pareto import ParetoPoint, pareto_frontier
+from optimizer1.optimizer import OptimizerConfig
 
 
 def point(name, passrate, tokens, average_score=None):

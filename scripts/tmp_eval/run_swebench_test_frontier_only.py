@@ -8,9 +8,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from memomemo.pareto import ParetoPoint, save_frontier
-from memomemo.schemas import CandidateResult
-from memomemo.swebench import (
+from optimizer1.pareto import ParetoPoint, save_frontier
+from optimizer1.schemas import CandidateResult
+from optimizer1.swebench import (
     DEFAULT_MINI_SWE_AGENT_NAME,
     MiniSweAgentSourceRunner,
     load_swebench_instances,

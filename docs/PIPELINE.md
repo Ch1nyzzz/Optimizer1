@@ -1,11 +1,11 @@
-# MemoMemo Optimization Pipeline
+# Optimizer1 Optimization Pipeline
 
-This document consolidates, in one place, the MemoMemo proposer/evaluator
+This document consolidates, in one place, the Optimizer1 proposer/evaluator
 optimization loop, the three context-selection policies
 (**default / progressive / bandit v3**), and the experimental results
 collected so far. After reading it you should be able to:
 
-1. Read `src/memomemo/optimizer.py` and follow the outer loop end-to-end;
+1. Read `src/optimizer1/optimizer.py` and follow the outer loop end-to-end;
 2. Make an informed choice between the three policies;
 3. Reproduce or extend the existing results on LoCoMo / LongMemEval / SWE-bench mini.
 
@@ -19,7 +19,7 @@ where breakthroughs occur across budget tiers are tracked in
 
 ## 0. Shared Skeleton (used by all three policies)
 
-Implemented in `LocomoOptimizer.run()` (`src/memomemo/optimizer.py:152-284`).
+Implemented in `LocomoOptimizer.run()` (`src/optimizer1/optimizer.py:152-284`).
 `SwebenchOptimizer` inherits the same outer loop and only overrides example
 loading, the seed frontier, and candidate evaluation.
 
@@ -28,7 +28,7 @@ picks its budget / reference iterations / file hints, and ② what state it
 writes back after evaluation. Everything else (workspace assembly, proposer
 invocation, frontier persistence) is identical.
 
-![Shared Skeleton](memomemo_shared_skeleton.svg)
+![Shared Skeleton](optimizer1_shared_skeleton.svg)
 
 Every iteration writes all of its artifacts to
 `runs/<run_id>/proposer_calls/iter_NNN/`. The proposer itself runs inside a
@@ -40,7 +40,7 @@ the raw benchmark data, or the scoring helpers — those paths are blocked by
 
 All three policies share the same builder
 (`build_progressive_proposer_prompt` in
-`src/memomemo/proposer_prompt.py`). The base prompt is identical across
+`src/optimizer1/proposer_prompt.py`). The base prompt is identical across
 policies — assignment header, objective, available files, edit scope,
 quality gate, and the `pending_eval.json` output schema. Three blocks are
 **conditionally injected** based on `selection_policy` and the
@@ -51,7 +51,7 @@ quality gate, and the `pending_eval.json` output schema. Three blocks are
 | Base prompt (assignment / objective / files / schema) | ✓ | ✓ | ✓ | ✓ |
 | **Optimization Focus** (mechanism direction list) | — | ✓ | ✓ | ✓ |
 | **Reference role note** (best iteration(s) / worst iteration) | — | — | ✓ progressive state | ✓ bandit state |
-| **Bandit Context Policy** (Hot / Other tracked files, `trace_scope`) | — | — | — | ✓ |
+| **Bandit Context Policy** (Hot / Other tracked files) | — | — | — | ✓ |
 
 Why the Optimization Focus row distinguishes default from
 progressive/bandit: in `LocomoOptimizer.run()` the call site sets
@@ -86,22 +86,23 @@ Concrete contents per policy:
   plus (a) a *Bandit reference roles* note built from the bandit
   state's best/worst iters, plus (b) a full **Bandit Context Policy**
   block that lists `Hot files to inspect first`
-  (core_files + top-8 by `policy_score`), `Other tracked files`
-  (next-12 by `policy_score`), and the `trace_scope` derived from the
-  budget. The hot/warm lists are explicitly framed as advisory — the
-  proposer is told it may still read other files if they fill a
-  diagnostic gap.
+  (core_files + top-8 by `policy_score`) and `Other tracked files`
+  (next-12 by `policy_score`). The hot/warm lists are explicitly framed
+  as advisory — the proposer is told it may still read other files if
+  they fill a diagnostic gap.
 
-Reference iteration count and `trace_scope` depth are decided **before**
-the prompt is built, by each policy's selection logic in `optimizer.py`
-(see §1–§3). The prompt builder only formats whatever the policy chose.
+Reference iteration count is decided **before** the prompt is built, by
+each policy's selection logic in `optimizer.py` (see §1–§3). The prompt
+builder only formats whatever the policy chose. Per-iteration trace
+artifacts come from the run-level `traces/` tree mirrored into the
+proposer workspace; see §6.
 
 ---
 
 ## 1. Default Policy (fixed-high baseline)
 
 **Entry point**: `OptimizerConfig.selection_policy = "default"`
-(`src/memomemo/optimizer.py:220-221`).
+(`src/optimizer1/optimizer.py:220-221`).
 
 **Decision rule**: every iteration is hard-coded to `budget = "high"`; no
 state is ever read or written.
@@ -150,18 +151,19 @@ soon as an improvement lands, drop back to `low` instead of paying the
 
 ![Progressive Policy state machine](progressive_policy_state_machine.svg)
 
-| budget | trace_scope | refs                  | prompt length |
-|--------|-------------|-----------------------|---------------|
-| low    | last1       | best1 + worst         | shortest      |
-| medium | last3       | best3 + worst         | medium        |
-| high   | all         | full history          | longest       |
+| budget | refs                  | prompt length |
+|--------|-----------------------|---------------|
+| low    | best1 + worst         | shortest      |
+| medium | best3 + worst         | medium        |
+| high   | full history          | longest       |
 
 **Per-iteration flow**:
 
 1. `_progressive_budget_for_iteration(k)` runs the state machine to pick a budget;
 2. `_reference_iterations_for_budget` selects refs for that budget;
-3. The workspace is assembled, trimming each ref bundle's `trace_slices`
-   according to `trace_scope`;
+3. The workspace is assembled (the run-level `traces/` tree is mirrored
+   in once; reference iteration bundles carry their own `diff.patch`,
+   `source_snapshot/`, etc.);
 4. `build_progressive_proposer_prompt` injects
    `selection_policy="progressive"` plus best/worst role hints and the
    Optimization Focus block (memgpt: 4 cells / mini-swe-agent: 5 cells);
@@ -208,15 +210,15 @@ into `hot` and excluded from ranking):
 - `hot` = core_files + top-8, read budget = 800 lines
 - `warm` = next 12, read budget = 300 lines
 
-Budget / `trace_scope` selection (bandit v4):
+Budget selection (bandit v4):
 
 ```
-iter == 1 or no file statistics yet      → low / last1 / refs=()
+iter == 1 or no file statistics yet      → low / refs=()
 stagnation ≥ bandit_stagnation_threshold (=4)
-                                          → high / all / full history refs
-otherwise                                 → medium / last3 / hot_iters first,
+                                          → high / full history refs
+otherwise                                 → medium / hot_iters first,
                                             then best3 + worst, cap 5
-force_budget=low                          → low / last1 / hot_iters first,
+force_budget=low                          → low / hot_iters first,
                                             then best1 + worst, cap 3
 ```
 
@@ -309,7 +311,7 @@ policy_score = 0.7·binary_util + 0.3·reward_util − cost + bonus
 
 ### 3.4 Required core files (always hot, never scored)
 
-`_bandit_core_files` (`src/memomemo/optimizer.py:1951`) keeps a fixed set of
+`_bandit_core_files` (`src/optimizer1/optimizer.py:1951`) keeps a fixed set of
 "foundation files" pinned into the hot list regardless of statistics:
 
 - The scaffold source file for the current `source_family`

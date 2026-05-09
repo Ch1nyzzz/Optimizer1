@@ -1,5 +1,5 @@
-from memomemo.evaluation import make_initial_candidate_grid
-from memomemo.scaffolds import (
+from optimizer1.evaluation import make_initial_candidate_grid
+from optimizer1.scaffolds import (
     DEFAULT_BASELINE_SCAFFOLDS,
     DEFAULT_EVOLUTION_SEED_SCAFFOLDS,
     DEFAULT_MEMORY_SCAFFOLDS,
@@ -7,8 +7,8 @@ from memomemo.scaffolds import (
     available_scaffolds,
     build_scaffold,
 )
-from memomemo.scaffolds.base import RetrievalMemoryScaffold, ScaffoldConfig
-from memomemo.schemas import ConversationTurn, LocomoExample
+from optimizer1.scaffolds.base import RetrievalMemoryScaffold, ScaffoldConfig
+from optimizer1.schemas import ConversationTurn, LocomoExample
 
 
 def example():

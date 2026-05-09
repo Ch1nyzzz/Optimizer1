@@ -2,9 +2,9 @@
 
 ## Project Structure & Module Organization
 
-MemoMemo is a Python 3.11 `src`-layout package. Core package code lives in
-`src/memomemo/`; memory scaffold implementations are under
-`src/memomemo/scaffolds/`, and small helpers live in `src/memomemo/utils/`.
+Optimizer1 is a Python 3.11 `src`-layout package. Core package code lives in
+`src/optimizer1/`; memory scaffold implementations are under
+`src/optimizer1/scaffolds/`, and small helpers live in `src/optimizer1/utils/`.
 Tests are in `tests/` and mirror major modules such as `test_optimizer.py`,
 `test_pareto.py`, and `test_scaffolds.py`. CLI and experiment helpers are in
 `scripts/`. Configuration examples are in `configs/`. Runtime outputs belong in
@@ -36,7 +36,7 @@ pytest -q
 Run a quick dry-run optimization smoke test:
 
 ```bash
-memomemo optimize --run-id smoke_opt --iterations 1 --limit 3 --dry-run \
+optimizer1 optimize --run-id smoke_opt --iterations 1 --limit 3 --dry-run \
   --scaffold-extra-json @configs/source_memory.example.json
 ```
 
@@ -197,7 +197,7 @@ user to restate this credential policy.
   and pass `--proposer-docker-env KIMI_API_KEY`.  Full example:
 
   ```bash
-  python -m memomemo.cli optimize --locomo \
+  python -m optimizer1.cli optimize --locomo \
     --proposer-agent kimi --selection-policy bandit \
     --proposer-sandbox docker \
     --proposer-docker-image docker-claude-kimi:latest \

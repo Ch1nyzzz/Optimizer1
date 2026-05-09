@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from memomemo.traces import get_adapter
-from memomemo.traces.adapters.longmemeval import LongMemEvalAdapter
+from optimizer1.traces import get_adapter
+from optimizer1.traces.adapters.longmemeval import LongMemEvalAdapter
 
 
 def _sample_task() -> dict:

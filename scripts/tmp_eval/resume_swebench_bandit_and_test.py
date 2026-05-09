@@ -9,15 +9,15 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from memomemo.pareto import ParetoPoint, save_frontier
-from memomemo.post_eval import write_post_eval_artifacts
-from memomemo.schemas import CandidateResult
-from memomemo.swebench import (
+from optimizer1.pareto import ParetoPoint, save_frontier
+from optimizer1.post_eval import write_post_eval_artifacts
+from optimizer1.schemas import CandidateResult
+from optimizer1.swebench import (
     DEFAULT_MINI_SWE_AGENT_NAME,
     MiniSweAgentSourceRunner,
     load_swebench_instances,
 )
-from memomemo.swebench_optimizer import SwebenchOptimizer, SwebenchOptimizerConfig
+from optimizer1.swebench_optimizer import SwebenchOptimizer, SwebenchOptimizerConfig
 
 
 RUN_ID = "swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_fixedsource_iter20_trainfirst30_w10_t900_20260430_233750"

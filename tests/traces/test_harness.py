@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from memomemo.schemas import CandidateResult
-from memomemo.traces import TraceHarness, read_jsonl
+from optimizer1.schemas import CandidateResult
+from optimizer1.traces import TraceHarness, read_jsonl
 
 
 def _write_candidate_result(

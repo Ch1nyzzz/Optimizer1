@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from memomemo.traces import get_adapter, has_adapter
-from memomemo.traces.adapters.locomo import LocomoAdapter
+from optimizer1.traces import get_adapter, has_adapter
+from optimizer1.traces.adapters.locomo import LocomoAdapter
 
 
 def _sample_task() -> dict:
@@ -47,18 +47,16 @@ def test_locomo_adapter_builds_trace_with_correct_benchmark_label():
 
 
 def test_locomo_optimizer_can_init_under_harness_backend(tmp_path):
-    """Sanity: LocomoOptimizer with --trace-backend=harness no longer
-    raises 'no adapter registered for locomo'."""
+    """Sanity: LocomoOptimizer constructs a TraceHarness backed by the
+    registered locomo adapter."""
 
-    from memomemo.locomo_optimizer import LocomoOptimizer, LocomoOptimizerConfig
+    from optimizer1.locomo_optimizer import LocomoOptimizer, LocomoOptimizerConfig
 
     cfg = LocomoOptimizerConfig(
         run_id="r",
         out_dir=tmp_path,
         iterations=0,
         proposer_docker_image="test",
-        trace_backend="harness",
     )
     optimizer = LocomoOptimizer(cfg)
-    assert optimizer.trace_harness is not None
     assert optimizer.trace_harness.benchmark == "locomo"

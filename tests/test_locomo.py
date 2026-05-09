@@ -1,5 +1,5 @@
-from memomemo.locomo import build_splits
-from memomemo.schemas import ConversationTurn, LocomoExample
+from optimizer1.locomo import build_splits
+from optimizer1.schemas import ConversationTurn, LocomoExample
 
 
 def test_build_splits_draws_train_from_one_auto_sample() -> None:

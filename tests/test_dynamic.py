@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from memomemo.dynamic import load_candidate_scaffold
-from memomemo.scaffolds.base import MemoryScaffold
+from optimizer1.dynamic import load_candidate_scaffold
+from optimizer1.scaffolds.base import MemoryScaffold
 
 
 def test_load_builtin_candidate_scaffold():
@@ -19,7 +19,7 @@ def test_load_run_local_generated_candidate(tmp_path):
     generated_dir.joinpath("run_candidate.py").write_text(
         "\n".join(
             [
-                "from memomemo.scaffolds.memgpt_scaffold import MemGPTSourceScaffold",
+                "from optimizer1.scaffolds.memgpt_scaffold import MemGPTSourceScaffold",
                 "",
                 "class RunCandidateScaffold(MemGPTSourceScaffold):",
                 '    name = "run_candidate"',
@@ -44,9 +44,9 @@ def test_load_run_local_generated_candidate(tmp_path):
 
 def test_load_builtin_scaffold_from_source_project_snapshot(tmp_path):
     source_root = tmp_path / "snapshot" / "candidate" / "project_source" / "src"
-    scaffold_dir = source_root / "memomemo" / "scaffolds"
+    scaffold_dir = source_root / "optimizer1" / "scaffolds"
     scaffold_dir.mkdir(parents=True)
-    (source_root / "memomemo" / "__init__.py").write_text("", encoding="utf-8")
+    (source_root / "optimizer1" / "__init__.py").write_text("", encoding="utf-8")
     (scaffold_dir / "__init__.py").write_text("", encoding="utf-8")
     (scaffold_dir / "base.py").write_text(
         "\n".join(
@@ -60,7 +60,7 @@ def test_load_builtin_scaffold_from_source_project_snapshot(tmp_path):
     (scaffold_dir / "memgpt_scaffold.py").write_text(
         "\n".join(
             [
-                "from memomemo.scaffolds.base import MemoryScaffold",
+                "from optimizer1.scaffolds.base import MemoryScaffold",
                 "",
                 "class MemGPTSourceScaffold(MemoryScaffold):",
                 '    name = "snapshot_memgpt"',
@@ -93,7 +93,7 @@ def test_load_generated_wrapper_from_source_project_snapshot(tmp_path):
     generated_dir.joinpath("snapshot_wrapper.py").write_text(
         "\n".join(
             [
-                "from memomemo.scaffolds.memgpt_scaffold import SnapshotOnlyScaffold",
+                "from optimizer1.scaffolds.memgpt_scaffold import SnapshotOnlyScaffold",
                 "",
                 "__all__ = ['SnapshotOnlyScaffold']",
             ]
@@ -102,9 +102,9 @@ def test_load_generated_wrapper_from_source_project_snapshot(tmp_path):
     )
 
     source_root = tmp_path / "snapshot" / "candidate" / "project_source" / "src"
-    scaffold_dir = source_root / "memomemo" / "scaffolds"
+    scaffold_dir = source_root / "optimizer1" / "scaffolds"
     scaffold_dir.mkdir(parents=True)
-    (source_root / "memomemo" / "__init__.py").write_text("", encoding="utf-8")
+    (source_root / "optimizer1" / "__init__.py").write_text("", encoding="utf-8")
     (scaffold_dir / "__init__.py").write_text("", encoding="utf-8")
     (scaffold_dir / "memgpt_scaffold.py").write_text(
         "\n".join(

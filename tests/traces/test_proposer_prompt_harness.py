@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from memomemo.proposer_prompt import build_progressive_proposer_prompt
+from optimizer1.proposer_prompt import build_progressive_proposer_prompt
 
 
 def _build(**overrides) -> str:
@@ -39,10 +39,13 @@ def test_prompt_includes_harness_section_when_dir_provided():
     assert "trace harness manifest" in text
     assert "traces/manifest.json" in text
     assert "traces/diagnostic/iter_NNN.md" in text
+    assert "traces/rationale/iter_NNN/<candidate>.md" in text
     assert "traces/spans/iter_NNN/<candidate>.jsonl" in text
     assert "traces/index.db" in text
-    # Mentions a usable SQL example for the proposer.
-    assert "SELECT" in text
+    # Mentions the structured-query CLI subcommands.
+    assert "python -m optimizer1.traces task-history" in text
+    assert "persistent-failures" in text
+    assert "candidate-outcome" in text
 
 
 def test_prompt_uses_relative_path_when_under_run_dir():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from memomemo.traces import (
+from optimizer1.traces import (
     Baseline,
     BaselineEntry,
     Indexer,

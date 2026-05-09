@@ -8,11 +8,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from memomemo.dynamic import load_candidate_scaffold
-from memomemo.evaluation import EvaluationRunner
-from memomemo.locomo import load_locomo_examples, prepare_locomo, select_split
-from memomemo.model import DEFAULT_BASE_URL, DEFAULT_MODEL
-from memomemo.scaffolds.base import ScaffoldConfig
+from optimizer1.dynamic import load_candidate_scaffold
+from optimizer1.evaluation import EvaluationRunner
+from optimizer1.locomo import load_locomo_examples, prepare_locomo, select_split
+from optimizer1.model import DEFAULT_BASE_URL, DEFAULT_MODEL
+from optimizer1.scaffolds.base import ScaffoldConfig
 
 
 DEFAULT_CANDIDATES: tuple[dict[str, Any], ...] = (

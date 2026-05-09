@@ -24,9 +24,9 @@ Expected OpenCode runner behavior:
 - Parse JSONL/JSON/text output robustly. It is acceptable to reuse the Codex-style extractor for OpenCode if OpenCode output events are similar, with a plain-text fallback.
 
 Required code touch points:
-- `src/memomemo/claude_runner.py`
-- `src/memomemo/optimizer.py`
-- `src/memomemo/cli.py`
+- `src/optimizer1/claude_runner.py`
+- `src/optimizer1/optimizer.py`
+- `src/optimizer1/cli.py`
 - task-specific optimizer config subclasses if they duplicate config fields
 - tests under `tests/test_claude_runner.py` and `tests/test_optimizer.py`
 

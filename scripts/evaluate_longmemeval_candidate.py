@@ -8,9 +8,9 @@ import json
 import os
 from pathlib import Path
 
-from memomemo.dynamic import load_candidate_scaffold
-from memomemo.evaluation import EvaluationRunner
-from memomemo.longmemeval import (
+from optimizer1.dynamic import load_candidate_scaffold
+from optimizer1.evaluation import EvaluationRunner
+from optimizer1.longmemeval import (
     DEFAULT_LONGMEMEVAL_JUDGE_BASE_URL,
     DEFAULT_LONGMEMEVAL_JUDGE_MODEL,
     LongMemEvalJudge,
@@ -19,8 +19,8 @@ from memomemo.longmemeval import (
     prepare_longmemeval,
     select_split,
 )
-from memomemo.model import DEFAULT_BASE_URL, DEFAULT_MODEL
-from memomemo.scaffolds.base import ScaffoldConfig
+from optimizer1.model import DEFAULT_BASE_URL, DEFAULT_MODEL
+from optimizer1.scaffolds.base import ScaffoldConfig
 
 
 def main() -> int:

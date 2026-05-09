@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from memomemo.longmemeval import (
+from optimizer1.longmemeval import (
     build_splits,
     build_judge_prompt,
     flatten_haystack_sessions,
     load_longmemeval_examples,
     select_split,
 )
-from memomemo.schemas import ConversationTurn, LocomoExample
+from optimizer1.schemas import ConversationTurn, LocomoExample
 
 
 def test_load_longmemeval_examples_converts_haystack_to_memory_qa(tmp_path: Path) -> None:

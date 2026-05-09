@@ -1,4 +1,4 @@
-"""Inject the local src/ tree before any system-installed memomemo package."""
+"""Inject the local src/ tree before any system-installed optimizer1 package."""
 
 from __future__ import annotations
 

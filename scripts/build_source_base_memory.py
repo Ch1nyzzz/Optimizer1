@@ -19,15 +19,15 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from memomemo.locomo import load_locomo_examples, prepare_locomo, select_split
-from memomemo.scaffolds.base import ScaffoldConfig
-from memomemo.scaffolds.mem0_scaffold import (
+from optimizer1.locomo import load_locomo_examples, prepare_locomo, select_split
+from optimizer1.scaffolds.base import ScaffoldConfig
+from optimizer1.scaffolds.mem0_scaffold import (
     DEFAULT_LOCOMO_CUSTOM_INSTRUCTIONS,
     _locomo_mem0_add_calls,
     _mem0_build_fingerprint,
     _mem0_source_path,
 )
-from memomemo.upstream import load_mem0_memory_class
+from optimizer1.upstream import load_mem0_memory_class
 
 
 def main() -> int:

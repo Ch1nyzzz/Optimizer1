@@ -8,16 +8,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-from memomemo.longmemeval import (
+from optimizer1.longmemeval import (
     DEFAULT_LONGMEMEVAL_JUDGE_BASE_URL,
     DEFAULT_LONGMEMEVAL_JUDGE_MODEL,
 )
-from memomemo.longmemeval_optimizer import (
+from optimizer1.longmemeval_optimizer import (
     LongMemEvalOptimizer,
     LongMemEvalOptimizerConfig,
 )
-from memomemo.model import DEFAULT_BASE_URL, DEFAULT_MODEL
-from memomemo.schemas import CandidateResult
+from optimizer1.model import DEFAULT_BASE_URL, DEFAULT_MODEL
+from optimizer1.schemas import CandidateResult
 
 
 def _load_json(path: Path) -> dict[str, Any]:

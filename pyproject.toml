@@ -21,8 +21,7 @@ dev = [
 ]
 [project.scripts]
 optiharness = "optiharness.cli:main"
-memomemo = "memomemo.cli:main"
-optimizer1 = "optimizer1_cli:main"
+optimizer1 = "optimizer1.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

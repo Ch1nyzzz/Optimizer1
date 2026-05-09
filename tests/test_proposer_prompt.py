@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from memomemo.optimization_cells import get_target_cells
-from memomemo.proposer_prompt import build_progressive_proposer_prompt
+from optimizer1.optimization_cells import get_target_cells
+from optimizer1.proposer_prompt import build_progressive_proposer_prompt
 
 
 def test_progressive_prompt_uses_workspace_summaries_and_reference_iterations():
@@ -415,7 +415,6 @@ def test_bandit_prompt_includes_context_policy_without_leaking_to_default():
         limit=0,
         selection_policy="bandit",
         bandit_policy={
-            "trace_scope": "last1",
             "hot_files": ["summaries/candidate_score_table.json"],
             "warm_files": ["summaries/diff_summary.jsonl"],
             "cold_files": [],

@@ -1,35 +1,30 @@
-"""End-to-end optimizer wiring under --trace-backend=harness.
+"""End-to-end optimizer wiring for the trace harness.
 
-Mirrors `tests/test_optimizer.py::test_run_writes_initial_trace_slices`
-but runs the LongMemEvalOptimizer with `trace_backend="harness"` to
-verify:
-  - traces/manifest.json + traces/spans/iter_NNN/<cand>.jsonl produced
-  - legacy trace_slices/ NOT created
-  - existing eval artefacts (candidate_score_table etc.) still produced
+Verifies that an optimizer run produces the structured trace tree
+under ``runs/<run>/traces/`` and that existing eval artefacts are
+still emitted alongside it.
 
-Heavy LLM and dataset calls are monkeypatched out, just like the legacy
-test.
+Heavy LLM and dataset calls are monkeypatched out.
 """
 
 from __future__ import annotations
 
 import json
 
-from memomemo.longmemeval_optimizer import (
+from optimizer1.longmemeval_optimizer import (
     LongMemEvalOptimizer,
     LongMemEvalOptimizerConfig,
 )
-from memomemo.schemas import CandidateResult
-from memomemo.traces import read_jsonl
+from optimizer1.schemas import CandidateResult
+from optimizer1.traces import read_jsonl
 
 
-def _seed_optimizer(tmp_path, *, trace_backend, monkeypatch):
+def _seed_optimizer(tmp_path, *, monkeypatch):
     cfg = LongMemEvalOptimizerConfig(
         run_id="r",
         out_dir=tmp_path,
         iterations=0,
         proposer_docker_image="memo-proposer:test",
-        trace_backend=trace_backend,
     )
     optimizer = LongMemEvalOptimizer(cfg)
 
@@ -85,13 +80,11 @@ def _seed_optimizer(tmp_path, *, trace_backend, monkeypatch):
     return optimizer
 
 
-def test_harness_run_writes_traces_and_skips_trace_slices(tmp_path, monkeypatch):
-    optimizer = _seed_optimizer(
-        tmp_path, trace_backend="harness", monkeypatch=monkeypatch
-    )
+def test_run_writes_traces_tree(tmp_path, monkeypatch):
+    optimizer = _seed_optimizer(tmp_path, monkeypatch=monkeypatch)
     optimizer.run()
 
-    # Legacy trace_slices/ not created.
+    # No legacy slices directory.
     assert not (tmp_path / "trace_slices").exists()
 
     # New traces/ tree created.
@@ -119,21 +112,9 @@ def test_harness_run_writes_traces_and_skips_trace_slices(tmp_path, monkeypatch)
     assert (tmp_path / "retrieval_diagnostics_summary.json").exists()
 
 
-def test_legacy_run_unchanged_when_backend_is_legacy(tmp_path, monkeypatch):
-    optimizer = _seed_optimizer(
-        tmp_path, trace_backend="legacy", monkeypatch=monkeypatch
-    )
-    optimizer.run()
-
-    # Legacy trace_slices/ created as before.
-    assert (tmp_path / "trace_slices" / "low" / "seed.json").exists()
-    assert (tmp_path / "trace_slices" / "medium" / "seed.json").exists()
-    # No traces/ tree.
-    assert not (tmp_path / "traces").exists()
-
-
 def test_copy_workspace_traces_mirrors_run_traces_into_workspace(tmp_path):
-    """Direct unit test for the copy helper used by harness mode."""
+    """Direct unit test for the copy helper that mirrors run-level
+    ``traces/`` into the proposer workspace."""
 
     optimizer = LongMemEvalOptimizer(
         LongMemEvalOptimizerConfig(
@@ -141,7 +122,6 @@ def test_copy_workspace_traces_mirrors_run_traces_into_workspace(tmp_path):
             out_dir=tmp_path,
             iterations=0,
             proposer_docker_image="memo-proposer:test",
-            trace_backend="harness",
         )
     )
     # Seed a manifest + diagnostic file in the run-level traces dir.
@@ -155,18 +135,3 @@ def test_copy_workspace_traces_mirrors_run_traces_into_workspace(tmp_path):
 
     assert (workspace / "traces" / "manifest.json").exists()
     assert (workspace / "traces" / "diagnostic" / "iter_001.md").exists()
-
-
-def test_copy_workspace_traces_noop_under_legacy(tmp_path):
-    optimizer = LongMemEvalOptimizer(
-        LongMemEvalOptimizerConfig(
-            run_id="r",
-            out_dir=tmp_path,
-            iterations=0,
-            proposer_docker_image="memo-proposer:test",
-            trace_backend="legacy",
-        )
-    )
-    workspace = tmp_path / "ws"
-    optimizer._copy_workspace_traces(workspace / "traces")
-    assert not (workspace / "traces").exists()

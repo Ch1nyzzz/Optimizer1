@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from memomemo.traces import (
+from optimizer1.traces import (
     STATUS_BASELINE,
     STATUS_BREAKTHROUGH,
     STATUS_NO_BASELINE,

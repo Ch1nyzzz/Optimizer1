@@ -49,7 +49,7 @@ pids=()
 # Memory tasks (locomo + longmemeval) share the same proposer/eval config.
 if [[ "$scope" == "all" || "$scope" == "memory" ]]; then
 memory_common=(
-  python -m memomemo.cli optimize
+  python -m optimizer1.cli optimize
   --iterations 30
   --split train
   --scaffolds memgpt_source
@@ -86,7 +86,7 @@ miniswe_eval_command="python /data/home/yuhan/MemoMemo/scripts/run_miniswe_swebe
 
 swebench_run_id="swebench_miniswe_deepseek_v4_flash_claudekimi_default_harness_docker_iter20_trainfirst30_w10_t900_${timestamp}"
 start_job "$swebench_run_id" \
-  python -m memomemo.cli optimize \
+  python -m optimizer1.cli optimize \
   --swebench \
   --iterations 20 \
   --split train \

@@ -10,7 +10,7 @@ to one of seven exclusive buckets:
                               retrieval_diagnostics_summary|iteration_index|diff_summary}*
 - summ-oth:        any other summaries/*
 - ref-iter-diff:   reference_iterations/iter_NNN/(diff.patch|diff_digest.md|pending_eval.json)
-- ref-iter-trace:  reference_iterations/iter_NNN/trace_slices/...
+- ref-iter-traces: reference_iterations/iter_NNN/traces/...
 - ref-iter-source: reference_iterations/iter_NNN/source_snapshot/...
 - ref-iter-other:  any other reference_iterations/iter_NNN/*
 - clean-source:    source_snapshot/candidate/... (NOT under reference_iterations)
@@ -75,8 +75,8 @@ def bucket_for(path: str) -> str:
         if not m:
             return "ref-iter-other"
         sub = m.group(1)
-        if sub.startswith("trace_slices/"):
-            return "ref-iter-trace"
+        if sub.startswith("traces/"):
+            return "ref-iter-traces"
         if sub.startswith("source_snapshot/"):
             return "ref-iter-source"
         head = sub.split("/")[0]

@@ -22,11 +22,10 @@ propose_timeout_s="${OPTIMIZER_PROPOSE_TIMEOUT_S:-2400}"
 opencode_model="${OPENCODE_MODEL:-deepseek/deepseek-v4-pro}"
 eval_model="${DEEPSEEK_EVAL_MODEL:-deepseek-v4-pro}"
 eval_base_url="${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}"
-trace_backend="${OPTIMIZER_TRACE_BACKEND:-harness}"
 
 common=(
   env PYTHONPATH=src
-  python -m memomemo.cli optimize
+  python -m optimizer1.cli optimize
   --iterations "${iterations}"
   --split train
   --limit "${limit}"
@@ -38,7 +37,6 @@ common=(
   --opencode-model "${opencode_model}"
   --proposer-sandbox none
   --selection-policy default
-  --trace-backend "${trace_backend}"
   --eval-workers "${eval_workers}"
 )
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from memomemo.claude_runner import (
+from optimizer1.claude_runner import (
     DEFAULT_OPENCODE_MODEL,
     ProposerSandboxConfig,
     _extract_opencode_result,
@@ -224,8 +224,8 @@ def test_run_opencode_prompt_constructs_command_and_records_output(tmp_path, mon
         calls.append((command, kwargs))
         return SimpleNamespace(returncode=0, stdout=raw_stdout, stderr="")
 
-    monkeypatch.setattr("memomemo.claude_runner.shutil.which", fake_which)
-    monkeypatch.setattr("memomemo.claude_runner.subprocess.run", fake_run)
+    monkeypatch.setattr("optimizer1.claude_runner.shutil.which", fake_which)
+    monkeypatch.setattr("optimizer1.claude_runner.subprocess.run", fake_run)
 
     result = run_opencode_prompt(
         "prompt",
@@ -264,9 +264,9 @@ def test_run_opencode_prompt_omits_model_flag_when_blank(tmp_path, monkeypatch):
     def fake_which(name):
         return f"/bin/{name}" if name == "opencode" else None
 
-    monkeypatch.setattr("memomemo.claude_runner.shutil.which", fake_which)
+    monkeypatch.setattr("optimizer1.claude_runner.shutil.which", fake_which)
     monkeypatch.setattr(
-        "memomemo.claude_runner.subprocess.run",
+        "optimizer1.claude_runner.subprocess.run",
         lambda command, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
 
@@ -286,12 +286,12 @@ def test_run_opencode_prompt_reports_missing_cli(tmp_path, monkeypatch):
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
 
-    monkeypatch.setattr("memomemo.claude_runner.shutil.which", lambda name: None)
+    monkeypatch.setattr("optimizer1.claude_runner.shutil.which", lambda name: None)
 
     def fail_run(*args, **kwargs):
         raise AssertionError("subprocess.run should not be invoked when CLI is missing")
 
-    monkeypatch.setattr("memomemo.claude_runner.subprocess.run", fail_run)
+    monkeypatch.setattr("optimizer1.claude_runner.subprocess.run", fail_run)
 
     result = run_opencode_prompt(
         "prompt",
@@ -332,8 +332,8 @@ def test_run_opencode_prompt_can_run_inside_docker_sandbox(tmp_path, monkeypatch
     def fake_run(command, **kwargs):
         return SimpleNamespace(returncode=0, stdout=raw_stdout, stderr="")
 
-    monkeypatch.setattr("memomemo.claude_runner.shutil.which", fake_which)
-    monkeypatch.setattr("memomemo.claude_runner.subprocess.run", fake_run)
+    monkeypatch.setattr("optimizer1.claude_runner.shutil.which", fake_which)
+    monkeypatch.setattr("optimizer1.claude_runner.subprocess.run", fake_run)
 
     result = run_opencode_prompt(
         "prompt",
@@ -366,7 +366,7 @@ def test_run_code_agent_prompt_dispatches_to_opencode(tmp_path, monkeypatch):
         return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
     monkeypatch.setattr(
-        "memomemo.claude_runner.run_opencode_prompt", fake_run_opencode
+        "optimizer1.claude_runner.run_opencode_prompt", fake_run_opencode
     )
 
     result = run_code_agent_prompt(
