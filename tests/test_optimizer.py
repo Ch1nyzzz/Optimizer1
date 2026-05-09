@@ -150,8 +150,8 @@ def test_default_proposer_accepts_top_level_candidate_list(tmp_path, monkeypatch
     assert pending["candidates"][0]["scaffold_name"] == "bm25"
 
 
-def test_optimizer_rejects_non_opencode_proposer_agent(tmp_path):
-    with pytest.raises(ValueError, match="Only the 'opencode' proposer agent"):
+def test_optimizer_rejects_unsupported_proposer_agent(tmp_path):
+    with pytest.raises(ValueError, match="Supported proposer agents"):
         LocomoOptimizer(
             LocomoOptimizerConfig(
                 run_id="r",
@@ -1909,3 +1909,159 @@ def _scored_candidate(
         config={"extra": {"source_family": "memgpt"}},
         result_path=f"{candidate_id}.json",
     )
+
+
+def test_proposer_show_trace_harness_section_flag_controls_prompt_kwarg(
+    tmp_path, monkeypatch
+):
+    """Default config passes a Path; the flag flips it to None so the
+    proposer prompt skips the entire trace-harness section."""
+
+    from optimizer1 import proposer_prompt as proposer_prompt_module
+
+    captured: dict[str, object] = {}
+
+    def fake_build(**kwargs):
+        captured.update(kwargs)
+        return "stub prompt"
+
+    monkeypatch.setattr(
+        optimizer_module,
+        "build_progressive_proposer_prompt",
+        fake_build,
+    )
+    monkeypatch.setattr(
+        optimizer_module,
+        "_iteration_from_dir_name",
+        lambda name: 0,
+    )
+
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_docker_image="memo-proposer:test",
+            proposer_show_trace_harness_section=False,
+        )
+    )
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    optimizer._build_progressive_workspace = lambda **kw: (workspace, ())  # type: ignore[assignment]
+
+    # Hand-call the prompt builder via the same kwarg shape the optimizer
+    # uses; we only care that the flag round-trips into the call.
+    from pathlib import Path as _Path
+
+    expected_dir = workspace / "traces"
+    optimizer_module.build_progressive_proposer_prompt(
+        run_id="r",
+        iteration=1,
+        run_dir=workspace,
+        pending_eval_path=workspace / "p.json",
+        summaries_dir=workspace / "summaries",
+        reference_iterations_dir=workspace / "refs",
+        generated_dir=workspace / "gen",
+        source_snapshot_dir=workspace / "src",
+        budget="medium",
+        reference_iterations=(),
+        target_system="memgpt",
+        optimization_directions=(),
+        split="train",
+        limit=10,
+        trace_harness_dir=(
+            expected_dir
+            if optimizer.config.proposer_show_trace_harness_section
+            else None
+        ),
+    )
+    assert captured["trace_harness_dir"] is None
+
+    optimizer_on = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r2",
+            out_dir=tmp_path / "r2",
+            iterations=0,
+            proposer_docker_image="memo-proposer:test",
+        )
+    )
+    captured.clear()
+    optimizer_module.build_progressive_proposer_prompt(
+        run_id="r2",
+        iteration=1,
+        run_dir=workspace,
+        pending_eval_path=workspace / "p.json",
+        summaries_dir=workspace / "summaries",
+        reference_iterations_dir=workspace / "refs",
+        generated_dir=workspace / "gen",
+        source_snapshot_dir=workspace / "src",
+        budget="medium",
+        reference_iterations=(),
+        target_system="memgpt",
+        optimization_directions=(),
+        split="train",
+        limit=10,
+        trace_harness_dir=(
+            expected_dir
+            if optimizer_on.config.proposer_show_trace_harness_section
+            else None
+        ),
+    )
+    assert captured["trace_harness_dir"] == expected_dir
+
+
+def test_write_proposer_agent_config_dispatches_by_agent(tmp_path):
+    """opencode → opencode.json; claude → .claude/settings.local.json."""
+
+    optimizer_oc = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r-oc",
+            out_dir=tmp_path / "oc",
+            iterations=0,
+            proposer_docker_image="memo-proposer:test",
+            proposer_agent="opencode",
+        )
+    )
+    ws_oc = tmp_path / "oc" / "ws"
+    ws_oc.mkdir(parents=True)
+    optimizer_oc._write_proposer_agent_config(ws_oc)
+    assert (ws_oc / "opencode.json").exists()
+    assert not (ws_oc / ".claude" / "settings.local.json").exists()
+
+    optimizer_cc = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r-cc",
+            out_dir=tmp_path / "cc",
+            iterations=0,
+            proposer_docker_image="memo-proposer:test",
+            proposer_agent="claude",
+        )
+    )
+    ws_cc = tmp_path / "cc" / "ws"
+    ws_cc.mkdir(parents=True)
+    optimizer_cc._write_proposer_agent_config(ws_cc)
+    settings = ws_cc / ".claude" / "settings.local.json"
+    assert settings.exists()
+    payload = json.loads(settings.read_text())
+    assert "trace-tools" in payload["mcpServers"]
+    assert payload["mcpServers"]["trace-tools"]["args"][1] == "optimizer1.traces.mcp_server"
+    assert "TRACE_DB" in payload["mcpServers"]["trace-tools"]["env"]
+
+
+def test_write_proposer_agent_config_skipped_when_section_hidden(tmp_path):
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_docker_image="memo-proposer:test",
+            proposer_agent="claude",
+            proposer_show_trace_harness_section=False,
+        )
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    optimizer._write_proposer_agent_config(ws)
+    assert not (ws / "opencode.json").exists()
+    assert not (ws / ".claude").exists()

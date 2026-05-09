@@ -1,8 +1,19 @@
-"""Prompt builder for proposer iterations."""
+"""Prompt builder for proposer iterations.
+
+The static role / objective / quality-gate / edit-scope policies live
+in ``prompts/proposer_system.md`` so they read like a contract rather
+than a Python format string. This module assembles only the
+per-iteration dynamic header (assignment fields, optional diagnoser /
+trace harness / curai-stagnation / bandit blocks, and the
+pending_eval.json schema with live path substitutions), then appends
+the static role document at the end.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
+
+from optimizer1.prompts import load_role_prompt
 
 
 def _optimization_subject(target_system: str) -> str:
@@ -60,6 +71,8 @@ def build_progressive_proposer_prompt(
     current_base_passrate: float | None = None,
     current_base_average_score: float | None = None,
     trace_harness_dir: Path | None = None,
+    diagnoser_report_path: Path | None = None,
+    diagnoser_via_subagent: bool = False,
 ) -> str:
     """Build the proposer prompt for scoped progressive-context runs."""
 
@@ -339,41 +352,69 @@ from the clean source."""
             "per-iteration diff vs baseline; sections are REGRESSED, "
             "PERSISTENT_FAIL, BREAKTHROUGH, plus counts-only STABLE_PASS / "
             "NO_BASELINE. Read this first to spot patterns.\n"
-            f"- `{trace_display}/rationale/iter_NNN/<candidate>.md` — "
-            "per-candidate hypothesis / diagnosis / next-signal narrative "
-            "(present only when --rationale-model was configured).\n"
             f"- `{trace_display}/spans/iter_NNN/<candidate>.jsonl` — full "
             "structured traces (one per line; spans cover retrieval, "
             "generation, and tools). Drill in when the markdown summary "
             "doesn't tell you enough.\n"
-            f"- `{trace_display}/index.db` — SQLite index over traces, "
-            "diffs, file_modifications, and rationales. Prefer the "
-            "structured query CLI below over hand-written SQL.\n"
-            "- Structured queries (run from inside the workspace; "
-            f"defaults to `{trace_display}/index.db`):\n"
-            "  - `python -m optimizer1.traces task-history <task_id>` — "
-            "iter-ordered status history for one task.\n"
-            "  - `python -m optimizer1.traces persistent-failures "
-            "[--min-streak N]` — tasks failing for ≥ N consecutive iters.\n"
-            "  - `python -m optimizer1.traces breakthroughs "
-            "[--since-iter N]` — tasks that flipped baseline-fail → pass.\n"
-            "  - `python -m optimizer1.traces regressions [--window N]` — "
-            "tasks that flipped baseline-pass → fail in the last N iters.\n"
-            "  - `python -m optimizer1.traces file-history <path>` — "
-            "iters that modified a path, with that iter's status counts.\n"
-            "  - `python -m optimizer1.traces candidate-outcome <iter> "
-            "<candidate_id>` — full per-candidate summary (counts, "
-            "modified files, rationale).\n"
-            "  Output is JSON by default; pass `--format md` for a quick "
-            "human-readable table.\n"
         )
 
-    return f"""# OptiHarness Proposer — iteration {iteration}
+    diagnoser_section = ""
+    if diagnoser_via_subagent:
+        diagnoser_section = """
+## Diagnoser subagent (call first)
+
+Before any other investigation, invoke the `diagnoser` subagent via
+the Task tool. It will explore traces and source, then write
+`diagnoser_report.json` at the workspace root. Read that report
+before designing this iteration's candidate. The subagent's full
+contract is in `.claude/agents/diagnoser.md`; you do not need to
+restate its instructions to it.
+
+The report is a hypothesis input, not ground truth. You may reject
+any direction it proposes, but record your reasoning in the
+candidate's `hypothesis` field if you do. If the report and the raw
+traces contradict each other, follow the traces and explain the
+discrepancy.
+"""
+    elif diagnoser_report_path is not None:
+        diagnoser_display = show(diagnoser_report_path)
+        diagnoser_section = f"""
+## Diagnoser Report (read first)
+
+A diagnoser subagent has already explored this iteration's traces and
+source snapshot and produced a structured failure-mode report at
+`{diagnoser_display}`. Read it before doing your own investigation; it
+exists to convert this iteration from an open-ended optimization step
+into a directed fix task.
+
+The report is a JSON object with these top-level fields:
+
+- `summary` — overall diagnosis (1–3 paragraphs).
+- `failure_modes[]` — each entry has `label`, `narrative`, `evidence`
+  (`kind` is `"trace"` or `"source"`, with workspace-relative `path`,
+  `lines`, `excerpt`, `comment`), `hypothesis`, and `directions` (each
+  with `summary`, `rationale`, `scope`, `risk`).
+- `context_observations[]` — additional facts the diagnoser flagged
+  that do not constitute standalone failure modes.
+- `open_questions[]` — items the diagnoser could not resolve; verify
+  any you depend on before committing to a direction.
+
+The report is a hypothesis input, not ground truth. You may reject any
+direction it proposes, but record your reasoning in the candidate's
+`hypothesis` field if you do. If the report and the raw traces
+contradict each other, follow the traces and explain the discrepancy.
+"""
+
+    # Legacy path concatenates the agent's role document and the
+    # workspace constraints into the user message. The Claude Code
+    # subagent path bypasses this entirely (role goes via
+    # --append-system-prompt and constraints via the workspace's
+    # CLAUDE.md), so it never sees role_block.
+    role_block = load_role_prompt("proposer") + "\n" + load_role_prompt("workspace")
+
+    iteration_header = f"""# OptiHarness Proposer — iteration {iteration}
 
 You are optimizing the {optimization_subject} for {benchmark_name}.
-
-Run exactly one iteration. The outer OptiHarness harness will import and evaluate
-the candidate after this session exits. Do not run the full harness evaluation.
 
 ## Assignment
 
@@ -389,28 +430,7 @@ the candidate after this session exits. Do not run the full harness evaluation.
 - Required output: `{pending_eval_display}`
 
 {starting_point_block}
-
-## Objective
-
-Primary objective: expand the quality Pareto frontier over `passrate` and
-`average_score`.
-
-Optimize both pass/fail reliability and partial-answer quality. `passrate` is
-the primary final metric, but `average_score` is an optimization objective
-because it captures near misses and often tracks generalization better than a
-single threshold. `token_consuming` is a reported diagnostic, not an objective.
-Do not reduce recall solely to save tokens. Compression, filtering, reranking,
-and context budgeting are valid when they are expected to improve answer
-quality by removing noise or surfacing stronger evidence.
-
-Optimize for expected generalization, not the reported training split alone.
-Use raw task traces to identify failure modes, recurring evidence gaps, and
-bad evidence-ordering behavior. Do not use traces to create answer-surface
-patches, scorer-specific strings, annotation typo fixes, or deterministic
-shortcuts for known saved tasks. Use gold answers only to classify failure
-modes; do not encode task-specific answers, names, dates, or scorer quirks into
-runtime behavior.
-
+{diagnoser_section}
 {focus_section}
 {bandit_section}
 
@@ -441,14 +461,7 @@ runtime behavior.
   iteration.
 {trace_harness_section}
 Do not read global run directories, global `candidate_results`, repo-root
-`src/`, `references/vendor`, {raw_data_policy}, or OptiHarness scoring helpers.
-Candidate runtime code must not access benchmark raw data, `candidate_results/**`,
-or `optimizer1.metrics.score_prediction`.
-The copied `optimizer1` package is intentionally benchmark-scoped and incomplete.
-Do not add runtime imports from repo-root harness modules such as
-`optimizer1.evaluation`, `optimizer1.pareto`, `optimizer1.metrics`, optimizer modules,
-or any module not listed in Available Files. Keep `optimizer1/__init__.py`
-minimal; do not make it import top-level repository APIs.
+`src/`, `references/vendor`, or {raw_data_policy}.
 {curai_section}
 
 ## Edit Scope
@@ -465,25 +478,7 @@ for this candidate, including scaffolds, base classes, model/prompt helpers,
 dynamic-loading helpers, and utils.
 {mini_swe_edit_note}
 
-Source-backed baseline memories and source bases are read-only and expensive
-to rebuild. If your source edit changes build/database-construction logic or
-other persisted memory construction semantics, use a fresh `source_base_dir`
-and a new stable `build_tag`. For upstream source edits, route explicit paths
-such as `memgpt_source_path` through the copied source snapshot.
-
-## Quality Gate
-
-Before writing `pending_eval.json`, verify that the candidate is a real
-mechanism change, is not just a `top_k`/`window`/threshold/weight variant, does
-not use gold answers at inference time, does not hardcode benchmark-specific
-answers, and uses the isolated source snapshot for source edits.
-Parameter changes are allowed only as supporting details of a mechanism change.
-A candidate whose substantive change is only `top_k`, window size, thresholds,
-weights, prompt length, or context budget will be rejected.
-Run a lightweight syntax/import smoke check against the edited snapshot before
-writing `pending_eval.json`; do not run the full harness evaluation.
-
-## Required Output
+## Required output for this iteration
 
 Write exactly this JSON file:
 `{pending_eval_display}`
@@ -512,15 +507,15 @@ Schema:
 }}
 ```
 
-Notes:
+Iteration-specific note: {source_path_note}
 
-- The `candidates` array must contain exactly one candidate.
-- `top_k` must be a single integer.
-- Use a source-backed scaffold such as `{candidate_scaffold_name}` when editing the copied
-  scaffold source.
-- {source_path_note}
-- If you create a wrapper module in `{generated_display}`, keep it small and
-  route source-backed mechanisms through the clean edited snapshot.
-- `reference_iterations` records the raw bundles available for diagnosis; it is
-  not a parent list.
+---
+
 """
+
+    if diagnoser_via_subagent:
+        # Claude Code auto-loads <workspace>/CLAUDE.md as the system
+        # prompt, so the static role policies are already in context.
+        # Avoid duplicating them in the user message.
+        return iteration_header
+    return iteration_header + role_block

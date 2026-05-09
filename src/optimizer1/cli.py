@@ -229,9 +229,13 @@ def main() -> int:
     optimize.add_argument("--eval-timeout-s", type=int, default=300)
     optimize.add_argument(
         "--proposer-agent",
-        choices=("opencode",),
+        choices=("opencode", "claude"),
         default="opencode",
-        help="Code agent used to generate candidates. Only 'opencode' is supported.",
+        help=(
+            "Code agent used to generate candidates: 'opencode' (default, "
+            "any OpenAI-compatible provider) or 'claude' (Claude Code, "
+            "routable via ANTHROPIC_BASE_URL to DeepSeek/Kimi/etc.)."
+        ),
     )
     optimize.add_argument(
         "--opencode-model",
@@ -239,6 +243,29 @@ def main() -> int:
         help=(
             "OpenCode model override in 'provider/model' form. "
             f"Defaults to {DEFAULT_OPENCODE_MODEL!r}."
+        ),
+    )
+    optimize.add_argument(
+        "--claude-model",
+        default="deepseek-v4-pro[1m]",
+        help=(
+            "Model name for Claude Code proposer (sets ANTHROPIC_MODEL). "
+            "Default 'deepseek-v4-pro[1m]' targets DeepSeek's anthropic-compat "
+            "endpoint with the 1M context tier."
+        ),
+    )
+    optimize.add_argument(
+        "--claude-base-url",
+        default="https://api.deepseek.com/anthropic",
+        help="ANTHROPIC_BASE_URL for Claude Code proposer.",
+    )
+    optimize.add_argument(
+        "--claude-auth-token",
+        default=None,
+        help=(
+            "ANTHROPIC_AUTH_TOKEN for Claude Code proposer. If unset, falls "
+            "back to DEEPSEEK_API_KEY env var, then ANTHROPIC_AUTH_TOKEN, "
+            "then ANTHROPIC_API_KEY."
         ),
     )
     optimize.add_argument("--propose-timeout-s", type=int, default=2400)
@@ -293,8 +320,8 @@ def main() -> int:
         action="store_true",
         help=(
             "Inject the Optimization Focus mechanism direction list into the "
-            "proposer prompt even when --selection-policy=default. Progressive "
-            "and bandit always include it."
+            "proposer prompt. Off by default for every selection policy; "
+            "set this flag to opt in regardless of policy."
         ),
     )
     optimize.add_argument(
@@ -411,24 +438,48 @@ def main() -> int:
         ),
     )
     optimize.add_argument(
-        "--rationale-model",
-        default=None,
+        "--proposer-no-trace-harness-section",
+        action="store_true",
         help=(
-            "Model name for the per-iter rationale LLM. When set together "
-            "with --rationale-base-url, the trace harness writes a "
-            "structured hypothesis/diagnosis/next-signal markdown for each "
-            "candidate. If unset, rationale generation is skipped."
+            "Skip the entire trace-harness file-path section in the "
+            "proposer prompt. The harness still records traces/spans, "
+            "diagnostic markdown, and the SQLite index server-side, and "
+            "MCP tools remain registered on the proposer container, but "
+            "the prompt no longer points at the on-disk paths. Use as a "
+            "control arm for trace-harness exposure ablations."
         ),
     )
     optimize.add_argument(
-        "--rationale-base-url",
+        "--diff-embedding-model",
         default=None,
-        help="OpenAI-compatible base URL for the rationale model.",
+        help=(
+            "Embedding model name (e.g. text-embedding-3-small). When set, "
+            "each iteration's diff.patch is embedded after recording and "
+            "stored in traces/index.db for the trace_similar MCP tool. "
+            "If unset, embedding generation is skipped."
+        ),
     )
     optimize.add_argument(
-        "--rationale-api-key",
+        "--diff-embedding-base-url",
         default=None,
-        help="API key for the rationale model (optional).",
+        help="OpenAI-compatible base URL for the embedding model (optional).",
+    )
+    optimize.add_argument(
+        "--diff-embedding-api-key",
+        default=None,
+        help="API key for the embedding model (optional).",
+    )
+    optimize.add_argument(
+        "--diagnose",
+        action="store_true",
+        help=(
+            "Run a diagnoser subagent in the proposer container before "
+            "each proposer step. The diagnoser explores traces and the "
+            "source snapshot and writes a structured failure-mode report "
+            "(diagnoser_report.json); the proposer reads it as hypothesis "
+            "input. Reports are cached per (base_iter, reference_iters) "
+            "within the run so identical lineage states do not re-diagnose."
+        ),
     )
     optimize.add_argument("--longmemeval-variant", choices=("s", "m", "oracle"), default="s")
     optimize.add_argument("--longmemeval-data-path", type=Path, default=None)
@@ -606,6 +657,9 @@ def main() -> int:
                     eval_timeout_s=args.eval_timeout_s,
                     proposer_agent=args.proposer_agent,
                     opencode_model=args.opencode_model,
+                    claude_model=args.claude_model,
+                    claude_base_url=args.claude_base_url,
+                    claude_auth_token=args.claude_auth_token,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -631,9 +685,11 @@ def main() -> int:
                     test_frontier=not args.no_test_frontier,
                     test_limit=args.test_frontier_limit,
                     trace_baseline_path=args.trace_baseline,
-                    rationale_model=args.rationale_model,
-                    rationale_base_url=args.rationale_base_url,
-                    rationale_api_key=args.rationale_api_key,
+                    proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
+                    diff_embedding_model=args.diff_embedding_model,
+                    diff_embedding_base_url=args.diff_embedding_base_url,
+                    diff_embedding_api_key=args.diff_embedding_api_key,
+                    diagnose=args.diagnose,
                 )
             )
             payload = optimizer.run()
@@ -658,6 +714,9 @@ def main() -> int:
                     eval_timeout_s=args.eval_timeout_s,
                     proposer_agent=args.proposer_agent,
                     opencode_model=args.opencode_model,
+                    claude_model=args.claude_model,
+                    claude_base_url=args.claude_base_url,
+                    claude_auth_token=args.claude_auth_token,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -680,9 +739,11 @@ def main() -> int:
                     proposer_docker_home=args.proposer_docker_home,
                     force=args.force,
                     trace_baseline_path=args.trace_baseline,
-                    rationale_model=args.rationale_model,
-                    rationale_base_url=args.rationale_base_url,
-                    rationale_api_key=args.rationale_api_key,
+                    proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
+                    diff_embedding_model=args.diff_embedding_model,
+                    diff_embedding_base_url=args.diff_embedding_base_url,
+                    diff_embedding_api_key=args.diff_embedding_api_key,
+                    diagnose=args.diagnose,
                 )
             )
             payload = optimizer.run()
@@ -708,6 +769,9 @@ def main() -> int:
                 eval_timeout_s=args.eval_timeout_s,
                 proposer_agent=args.proposer_agent,
                 opencode_model=args.opencode_model,
+                claude_model=args.claude_model,
+                claude_base_url=args.claude_base_url,
+                claude_auth_token=args.claude_auth_token,
                 propose_timeout_s=args.propose_timeout_s,
                 dry_run=args.dry_run,
                 max_context_chars=args.max_context_chars,
@@ -733,9 +797,11 @@ def main() -> int:
                 test_frontier=not args.no_test_frontier,
                 test_limit=args.test_frontier_limit,
                 trace_baseline_path=args.trace_baseline,
-                rationale_model=args.rationale_model,
-                rationale_base_url=args.rationale_base_url,
-                rationale_api_key=args.rationale_api_key,
+                proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
+                diff_embedding_model=args.diff_embedding_model,
+                diff_embedding_base_url=args.diff_embedding_base_url,
+                diff_embedding_api_key=args.diff_embedding_api_key,
+                diagnose=args.diagnose,
             )
         )
         payload = optimizer.run()

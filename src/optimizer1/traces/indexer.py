@@ -72,15 +72,13 @@ CREATE TABLE IF NOT EXISTS file_modifications (
 
 CREATE INDEX IF NOT EXISTS ix_file_mods_path ON file_modifications(path);
 
-CREATE TABLE IF NOT EXISTS rationales (
-    iteration     INTEGER NOT NULL,
-    candidate_id  TEXT    NOT NULL,
-    hypothesis    TEXT,
-    diagnosis     TEXT,
-    next_signal   TEXT,
-    rationale_path TEXT NOT NULL,
-    raw_yaml      TEXT,
-    PRIMARY KEY (iteration, candidate_id)
+CREATE TABLE IF NOT EXISTS diff_embeddings (
+    iteration  INTEGER NOT NULL,
+    model      TEXT    NOT NULL,
+    dim        INTEGER NOT NULL,
+    diff_text  TEXT    NOT NULL,
+    embedding  BLOB    NOT NULL,
+    PRIMARY KEY (iteration)
 );
 
 CREATE TABLE IF NOT EXISTS manifest (
@@ -221,33 +219,23 @@ class Indexer:
                     [(iteration, p) for p in normalized],
                 )
 
-    def record_rationale(
+    def record_diff_embedding(
         self,
         *,
         iteration: int,
-        candidate_id: str,
-        rationale_path: Path,
-        hypothesis: str | None,
-        diagnosis: str | None,
-        next_signal: str | None,
-        raw_yaml: str | None,
+        model: str,
+        dim: int,
+        diff_text: str,
+        embedding: bytes,
     ) -> None:
-        """Insert or replace one (iteration, candidate) rationale row."""
+        """Insert or replace the diff embedding for one iteration."""
 
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO rationales("
-                "iteration, candidate_id, hypothesis, diagnosis, next_signal, "
-                "rationale_path, raw_yaml) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    iteration,
-                    candidate_id,
-                    hypothesis,
-                    diagnosis,
-                    next_signal,
-                    str(rationale_path),
-                    raw_yaml,
-                ),
+                "INSERT OR REPLACE INTO diff_embeddings("
+                "iteration, model, dim, diff_text, embedding) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (iteration, model, int(dim), diff_text, embedding),
             )
 
     # ---- internals -----------------------------------------------

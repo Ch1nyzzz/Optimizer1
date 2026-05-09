@@ -28,8 +28,8 @@ from optimizer1.schemas import CandidateResult
 
 from .adapter import get_adapter
 from .baseline import Baseline
+from .embeddings import DiffEmbedder
 from .indexer import Indexer
-from .rationale import RationaleWriter
 from .recorder import Recorder
 from .renderer import RenderConfig, Renderer
 from .schema import SCHEMA_VERSION
@@ -45,7 +45,7 @@ class TraceHarness:
         benchmark: str,
         baseline_path: Path | None = None,
         render_config: RenderConfig | None = None,
-        rationale_writer: RationaleWriter | None = None,
+        diff_embedder: DiffEmbedder | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.root = self.run_dir / "traces"
@@ -65,7 +65,7 @@ class TraceHarness:
             baseline=self.baseline,
         )
         self.renderer = Renderer(self.root, config=render_config)
-        self.rationale_writer = rationale_writer
+        self.diff_embedder = diff_embedder
         self._manifest_written = False
         # When no external baseline is provided, iter_0 of *this* run
         # acts as the implicit baseline. We lazy-load it the first time
@@ -158,61 +158,18 @@ class TraceHarness:
                 iteration=iteration,
                 paths=_paths_from_diff_text(diff_text),
             )
-            self.renderer.render_iteration(iteration)
-            if self.rationale_writer is not None and not treat_as_baseline:
-                self._record_rationales(
-                    iteration=iteration,
-                    candidates=candidates,
-                    diff_text=diff_text,
-                )
-        return written
-
-    def _record_rationales(
-        self,
-        *,
-        iteration: int,
-        candidates: list[CandidateResult],
-        diff_text: str,
-    ) -> None:
-        """Generate per-candidate rationales and persist them.
-
-        Best-effort: any error is swallowed so rationale generation
-        never blocks the optimizer loop.
-        """
-
-        assert self.rationale_writer is not None
-        pending_eval = self._read_pending_eval(iteration)
-        for candidate in candidates:
-            payload = self._read_result(candidate)
-            tasks_raw = payload.get("tasks") if isinstance(payload, dict) else None
-            tasks = [t for t in (tasks_raw or []) if isinstance(t, dict)]
-            try:
-                summary = _summary_from_candidate(candidate, tasks)
-                result = self.rationale_writer.write(
-                    iteration=iteration,
-                    candidate_id=candidate.candidate_id,
-                    pending_eval=pending_eval,
-                    tasks=tasks,
-                    diff_text=diff_text,
-                    status_counts=_status_counts_for(
-                        self.indexer.db_path,
+            if self.diff_embedder is not None and diff_text:
+                emb = self.diff_embedder.embed(diff_text)
+                if emb is not None:
+                    self.indexer.record_diff_embedding(
                         iteration=iteration,
-                        candidate_id=candidate.candidate_id,
-                    ),
-                    passrate=summary["passrate"],
-                    mean_score=summary["mean_score"],
-                )
-                self.indexer.record_rationale(
-                    iteration=iteration,
-                    candidate_id=candidate.candidate_id,
-                    rationale_path=result.path,
-                    hypothesis=result.hypothesis,
-                    diagnosis=result.diagnosis,
-                    next_signal=result.next_signal,
-                    raw_yaml=result.raw_response or None,
-                )
-            except Exception:  # noqa: BLE001 — never break the loop
-                continue
+                        model=emb.model,
+                        dim=emb.dim,
+                        diff_text=emb.diff_text,
+                        embedding=emb.to_bytes(),
+                    )
+            self.renderer.render_iteration(iteration)
+        return written
 
     def _read_diff_text(self, iteration: int) -> str:
         diff_path = (
@@ -224,22 +181,6 @@ class TraceHarness:
         if not diff_path.exists():
             return ""
         return diff_path.read_text(encoding="utf-8", errors="replace")
-
-    def _read_pending_eval(self, iteration: int) -> dict[str, Any] | None:
-        path = (
-            self.run_dir
-            / "proposer_calls"
-            / f"iter_{iteration:03d}"
-            / "pending_eval.json"
-        )
-        if not path.exists():
-            path = self.run_dir / "pending_eval.json"
-            if not path.exists():
-                return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
 
     def _load_self_iter0_baseline(self) -> None:
         """Populate `self.baseline` from this run's iter_0 traces.
@@ -277,59 +218,3 @@ def _paths_from_diff_text(diff_text: str) -> list[str]:
         if len(parts) >= 4:
             out.append(parts[3].removeprefix("b/"))
     return sorted(set(out))
-
-
-def _summary_from_candidate(
-    candidate: CandidateResult,
-    tasks: list[dict[str, Any]],
-) -> dict[str, float | None]:
-    """Compute per-candidate summary stats used by the rationale prompt.
-
-    Falls back to the candidate-level fields when per-task stats aren't
-    present on the result payload.
-    """
-
-    if not tasks:
-        return {
-            "passrate": float(candidate.passrate) if candidate.passrate is not None else None,
-            "mean_score": (
-                float(candidate.average_score)
-                if candidate.average_score is not None
-                else None
-            ),
-        }
-    n = len(tasks)
-    passes = sum(1 for t in tasks if t.get("passed"))
-    score_sum = sum(float(t.get("score") or 0.0) for t in tasks)
-    return {
-        "passrate": passes / n,
-        "mean_score": score_sum / n,
-    }
-
-
-def _status_counts_for(
-    db_path: Path,
-    *,
-    iteration: int,
-    candidate_id: str,
-) -> dict[str, int]:
-    """Read aggregated status counts for one (iter, candidate) directly
-    from index.db. Used by the rationale prompt builder."""
-
-    import sqlite3
-
-    sql = """
-        SELECT d.status, COUNT(*) AS n
-        FROM traces t
-        JOIN diffs d USING (trace_id)
-        WHERE t.iteration = ? AND t.candidate_id = ?
-        GROUP BY d.status
-    """
-    out: dict[str, int] = {}
-    try:
-        with sqlite3.connect(db_path) as conn:
-            for status, count in conn.execute(sql, (iteration, candidate_id)):
-                out[str(status)] = int(count)
-    except sqlite3.Error:
-        return {}
-    return out

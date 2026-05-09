@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import random
 import re
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +30,11 @@ from optimizer1.claude_runner import (
     _int_metric,
     run_code_agent_prompt,
 )
+from optimizer1.diagnoser_prompt import (
+    REPORT_FILENAME as DIAGNOSER_REPORT_FILENAME,
+    build_diagnoser_prompt,
+    validate_report as validate_diagnoser_report,
+)
 from optimizer1.dynamic import load_candidate_scaffold
 from optimizer1.evaluation import EvaluationRunner, run_initial_frontier
 from optimizer1.locomo import default_data_path, load_locomo_examples, prepare_locomo, select_split
@@ -36,7 +43,7 @@ from optimizer1.optimization_cells import get_target_cells
 from optimizer1.pareto import ParetoPoint, pareto_frontier, save_frontier
 from optimizer1.post_eval import write_diff_digest, write_post_eval_artifacts
 from optimizer1.traces import TraceHarness, has_adapter
-from optimizer1.traces.rationale import RationaleWriter
+from optimizer1.traces.embeddings import DiffEmbedder
 from optimizer1.proposer_prompt import build_progressive_proposer_prompt
 from optimizer1.scaffolds import DEFAULT_EVOLUTION_SEED_SCAFFOLDS, DEFAULT_SCAFFOLD_TOP_KS
 from optimizer1.scaffolds.base import ScaffoldConfig
@@ -73,6 +80,9 @@ class OptimizerConfig:
     eval_timeout_s: int = 300
     proposer_agent: str = "opencode"
     opencode_model: str = DEFAULT_OPENCODE_MODEL
+    claude_model: str = "deepseek-v4-pro[1m]"
+    claude_base_url: str = "https://api.deepseek.com/anthropic"
+    claude_auth_token: str | None = None
     propose_timeout_s: int = 2400
     dry_run: bool = False
     max_context_chars: int = 6000
@@ -111,9 +121,11 @@ class OptimizerConfig:
     test_split: str = "test"
     test_limit: int = 0
     trace_baseline_path: Path | None = None
-    rationale_model: str | None = None
-    rationale_base_url: str | None = None
-    rationale_api_key: str | None = None
+    proposer_show_trace_harness_section: bool = True
+    diff_embedding_model: str | None = None
+    diff_embedding_base_url: str | None = None
+    diff_embedding_api_key: str | None = None
+    diagnose: bool = False
 
 
 class LocomoOptimizer:
@@ -138,6 +150,7 @@ class LocomoOptimizer:
         )
         self.iteration_index_path = self.run_dir / "iteration_index.json"
         self.diff_summary_path = self.run_dir / "diff_summary.jsonl"
+        self.diagnoser_cache_dir = self.run_dir / "diagnoser_cache"
         self._validate_proposer_sandbox_policy()
         self._validate_proposer_agent()
         self.trace_harness: TraceHarness = self._build_trace_harness()
@@ -149,31 +162,29 @@ class LocomoOptimizer:
                 f"No trace adapter is registered for benchmark "
                 f"{benchmark!r}. Register one in optimizer1.traces.adapters."
             )
-        rationale_writer = self._build_rationale_writer()
+        diff_embedder = self._build_diff_embedder()
         return TraceHarness(
             run_dir=self.run_dir,
             benchmark=benchmark,
             baseline_path=self.config.trace_baseline_path,
-            rationale_writer=rationale_writer,
+            diff_embedder=diff_embedder,
         )
 
-    def _build_rationale_writer(self) -> RationaleWriter | None:
-        model = (self.config.rationale_model or "").strip()
-        base_url = (self.config.rationale_base_url or "").strip()
-        if not model or not base_url:
+    def _build_diff_embedder(self) -> DiffEmbedder | None:
+        model = (self.config.diff_embedding_model or "").strip()
+        if not model:
             return None
-        return RationaleWriter(
-            root=self.run_dir / "traces",
+        return DiffEmbedder(
             model=model,
-            base_url=base_url,
-            api_key=self.config.rationale_api_key,
+            api_key=self.config.diff_embedding_api_key,
+            base_url=self.config.diff_embedding_base_url or None,
         )
 
     def _validate_proposer_agent(self) -> None:
         agent = self.config.proposer_agent.strip().lower()
-        if agent != "opencode":
+        if agent not in {"opencode", "claude"}:
             raise ValueError(
-                "Only the 'opencode' proposer agent is supported; got "
+                "Supported proposer agents: 'opencode', 'claude'; got "
                 f"proposer_agent={self.config.proposer_agent!r}"
             )
 
@@ -464,6 +475,17 @@ class LocomoOptimizer:
             workspace_generated_dir = workspace_dir / "generated"
             workspace_source_snapshot_dir = workspace_dir / "source_snapshot"
             workspace_pending_eval_path = workspace_dir / "pending_eval.json"
+            workspace_traces_dir = workspace_dir / "traces"
+            diagnoser_report_path = self._run_diagnoser_subagent(
+                iteration=iteration,
+                workspace_dir=workspace_dir,
+                call_dir=call_dir,
+                reference_iterations=reference_iterations,
+                base_iter=curaii_base_iter,
+                trace_harness_dir=(
+                    workspace_traces_dir if workspace_traces_dir.exists() else None
+                ),
+            )
             prompt = build_progressive_proposer_prompt(
                 run_id=self.config.run_id,
                 iteration=iteration,
@@ -478,7 +500,7 @@ class LocomoOptimizer:
                 target_system=self.config.progressive_target_system,
                 optimization_directions=(
                     self._optimization_direction_lines(self.config.progressive_target_system)
-                    if (adaptive or self.config.include_optimization_direction)
+                    if self.config.include_optimization_direction
                     else ()
                 ),
                 split=self.config.split,
@@ -496,7 +518,13 @@ class LocomoOptimizer:
                 current_base_iter=curaii_base_iter,
                 current_base_passrate=curaii_base_passrate,
                 current_base_average_score=curaii_base_average_score,
-                trace_harness_dir=workspace_dir / "traces",
+                trace_harness_dir=(
+                    workspace_traces_dir
+                    if self.config.proposer_show_trace_harness_section
+                    else None
+                ),
+                diagnoser_report_path=diagnoser_report_path,
+                diagnoser_via_subagent=self._uses_claude_subagent_diagnoser(),
             )
             if retry_note:
                 prompt = f"{prompt}\n\n{retry_note}"
@@ -876,7 +904,157 @@ class LocomoOptimizer:
             pending_eval_path=workspace_dir / "pending_eval.json",
             bandit_policy=bandit_policy,
         )
+        self._write_proposer_agent_config(workspace_dir)
+        self._deploy_subagent_assets(workspace_dir)
         return workspace_dir, reference_iterations
+
+    def _uses_claude_subagent_diagnoser(self) -> bool:
+        """Whether the diagnoser runs as a Claude Code subagent.
+
+        Active only when the proposer agent is Claude *and* ``--diagnose``
+        is on. In that mode the optimizer no longer pre-calls the
+        diagnoser; the proposer's main session invokes it via the Task
+        tool, and Claude Code loads the subagent's system prompt from
+        ``<workspace>/.claude/agents/diagnoser.md``.
+        """
+
+        return (
+            self.config.diagnose
+            and self.config.proposer_agent.strip().lower() == "claude"
+        )
+
+    def _deploy_subagent_assets(self, workspace_dir: Path) -> None:
+        """Copy the per-workspace Claude Code subagent assets when active.
+
+        Routes the canonical agent files from ``optimizer1.prompts``
+        to the locations Claude Code's protocol expects, treating
+        proposer and diagnoser symmetrically as named subagents:
+
+          - ``proposer.md`` → ``<workspace>/.claude/agents/proposer.md``
+            (the main session runs as this subagent via
+            ``claude --agent proposer``).
+          - ``diagnoser.md`` → ``<workspace>/.claude/agents/diagnoser.md``
+            (invoked from the proposer via the Task tool).
+          - ``workspace.md`` → ``<workspace>/CLAUDE.md``
+            (auto-loaded project-level *constraints* — Quality Gate,
+            edit scope, pending_eval.json conventions, etc. — not
+            anyone's role).
+
+        No-op for OpenCode and for runs where the diagnoser is not
+        enabled — those paths still rely on the legacy prompt-string
+        injection through ``load_role_prompt``.
+        """
+
+        if not self._uses_claude_subagent_diagnoser():
+            return
+        from optimizer1.prompts import role_prompt_path
+
+        proposer_src = role_prompt_path("proposer")
+        diagnoser_src = role_prompt_path("diagnoser")
+        workspace_src = role_prompt_path("workspace")
+
+        if workspace_src.exists():
+            (workspace_dir / "CLAUDE.md").write_text(
+                workspace_src.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+        agents_dir = workspace_dir / ".claude" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        for src, dest_name in (
+            (proposer_src, "proposer.md"),
+            (diagnoser_src, "diagnoser.md"),
+        ):
+            if src.exists():
+                (agents_dir / dest_name).write_text(
+                    src.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+
+    def _write_proposer_agent_config(self, workspace_dir: Path) -> None:
+        """Register the trace MCP server in the proposer's agent config.
+
+        Dispatches by ``proposer_agent``:
+        - ``opencode`` → ``<workspace>/opencode.json``  (mcp section)
+        - ``claude``   → ``<workspace>/.claude/settings.local.json`` (mcpServers)
+
+        Skipped when the proposer prompt's trace-harness section is
+        suppressed — under that ablation we want the proposer to have
+        no access to trace tools at all.
+        """
+
+        if not self.config.proposer_show_trace_harness_section:
+            return
+        env = self._mcp_server_env(workspace_dir)
+        cmd_argv = [sys.executable, "-m", "optimizer1.traces.mcp_server"]
+        agent = self.config.proposer_agent.strip().lower()
+        if agent == "claude":
+            self._write_claude_settings(workspace_dir, cmd_argv=cmd_argv, env=env)
+        else:
+            self._write_opencode_config(workspace_dir, cmd_argv=cmd_argv, env=env)
+
+    def _mcp_server_env(self, workspace_dir: Path) -> dict[str, str]:
+        env: dict[str, str] = {
+            "TRACE_DB": str(workspace_dir / "traces" / "index.db"),
+            "PYTHONPATH": str(self.project_root / "src"),
+        }
+        # trace_similar re-embeds the proposer's query at call-time; it
+        # needs an OpenAI key. Forward whatever the parent process has.
+        for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
+        return env
+
+    def _write_opencode_config(
+        self,
+        workspace_dir: Path,
+        *,
+        cmd_argv: list[str],
+        env: dict[str, str],
+    ) -> None:
+        config = {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {
+                "trace-tools": {
+                    "type": "local",
+                    "command": cmd_argv,
+                    "environment": env,
+                    "enabled": True,
+                }
+            },
+        }
+        path = workspace_dir / "opencode.json"
+        path.write_text(
+            json.dumps(config, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _write_claude_settings(
+        self,
+        workspace_dir: Path,
+        *,
+        cmd_argv: list[str],
+        env: dict[str, str],
+    ) -> None:
+        """Write `<workspace>/.claude/settings.local.json` with an MCP
+        server entry. Claude Code reads this file when launched in the
+        workspace cwd and forks the MCP server as a stdio subprocess."""
+
+        settings_dir = workspace_dir / ".claude"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        config = {
+            "mcpServers": {
+                "trace-tools": {
+                    "command": cmd_argv[0],
+                    "args": cmd_argv[1:],
+                    "env": env,
+                }
+            }
+        }
+        (settings_dir / "settings.local.json").write_text(
+            json.dumps(config, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     def _copy_workspace_traces(self, dest: Path) -> None:
         """Mirror run-level `traces/` into the proposer workspace.
@@ -1311,16 +1489,185 @@ class LocomoOptimizer:
         name: str,
         cwd: Path | None = None,
     ) -> Any:
-        return run_code_agent_prompt(
-            prompt,
-            agent="opencode",
+        agent = self.config.proposer_agent.strip().lower()
+        kwargs: dict[str, Any] = dict(
             cwd=cwd or self.project_root,
             log_dir=log_dir,
             name=name,
-            model=self.config.opencode_model,
             timeout_s=self.config.propose_timeout_s,
             sandbox=self._proposer_sandbox_config(),
         )
+        if agent == "claude":
+            kwargs["model"] = self.config.claude_model
+            kwargs["claude_base_url"] = self.config.claude_base_url
+            kwargs["claude_auth_token"] = self.config.claude_auth_token
+            # In subagent mode the proposer runs as the named
+            # `.claude/agents/proposer.md` subagent — its frontmatter
+            # supplies the system prompt and tool allowlist, so the
+            # role / identity text never enters the user message. The
+            # diagnoser is reached from there via the Task tool.
+            if self._uses_claude_subagent_diagnoser() and name == "proposer":
+                kwargs["claude_agent_name"] = "proposer"
+        else:
+            kwargs["model"] = self.config.opencode_model
+        return run_code_agent_prompt(prompt, agent=agent, **kwargs)
+
+    def _diagnoser_cache_key(
+        self,
+        *,
+        base_iter: int | None,
+        reference_iterations: tuple[int, ...],
+    ) -> str:
+        parts = [
+            "v1",
+            self.workspace_spec.benchmark,
+            "base=" + (str(base_iter) if base_iter is not None else "none"),
+            "refs=" + ",".join(str(item) for item in sorted(reference_iterations)),
+        ]
+        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+    def _diagnoser_cache_path(self, key: str) -> Path:
+        return self.diagnoser_cache_dir / f"{key}.json"
+
+    def _run_diagnoser_subagent(
+        self,
+        *,
+        iteration: int,
+        workspace_dir: Path,
+        call_dir: Path,
+        reference_iterations: tuple[int, ...],
+        base_iter: int | None,
+        trace_harness_dir: Path | None,
+    ) -> Path | None:
+        """Run the diagnoser subagent in the same proposer container.
+
+        Returns the path to ``diagnoser_report.json`` inside
+        ``workspace_dir`` on success (cache hit or fresh run that
+        produced a valid report), or ``None`` if the diagnoser failed
+        or wrote an invalid report. Failure is non-fatal: the proposer
+        will still run, just without a diagnoser section.
+        """
+
+        if not self.config.diagnose:
+            return None
+        if self._uses_claude_subagent_diagnoser():
+            # Claude proposer invokes the diagnoser via Task tool from
+            # its main session; the optimizer does not pre-call it and
+            # there is no pre-written report path to advertise.
+            return None
+
+        report_path = workspace_dir / DIAGNOSER_REPORT_FILENAME
+        cache_key = self._diagnoser_cache_key(
+            base_iter=base_iter,
+            reference_iterations=reference_iterations,
+        )
+        cache_path = self._diagnoser_cache_path(cache_key)
+
+        if cache_path.exists():
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                cached = None
+            if cached is not None:
+                ok, _ = validate_diagnoser_report(cached)
+                if ok:
+                    report_path.write_text(
+                        json.dumps(cached, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    self._append_event(
+                        {
+                            "iteration": iteration,
+                            "event": "diagnoser_cache_hit",
+                            "cache_key": cache_key,
+                            "base_iter": base_iter,
+                            "reference_iterations": list(reference_iterations),
+                        }
+                    )
+                    return report_path
+
+        prompt = build_diagnoser_prompt(
+            run_id=self.config.run_id,
+            iteration=iteration,
+            workspace_dir=workspace_dir,
+            target_system=self.config.progressive_target_system,
+            benchmark_name=self._benchmark_prompt_name(),
+            reference_iterations=reference_iterations,
+            current_base_iter=base_iter,
+            trace_harness_dir=trace_harness_dir,
+            report_path=report_path,
+        )
+        if report_path.exists():
+            # Stale report from a prior attempt — diagnoser must produce
+            # a fresh one; otherwise validation would silently accept
+            # the old output even if this run failed early.
+            report_path.unlink()
+
+        result = self._run_proposer_agent(
+            prompt,
+            log_dir=call_dir / "agent" / "diagnoser",
+            name="diagnoser",
+            cwd=workspace_dir,
+        )
+        ok_run = (
+            getattr(result, "returncode", None) == 0
+            and not getattr(result, "timed_out", False)
+            and report_path.exists()
+        )
+        if not ok_run:
+            self._append_event(
+                {
+                    "iteration": iteration,
+                    "event": "diagnoser_run_failed",
+                    "cache_key": cache_key,
+                    "returncode": getattr(result, "returncode", None),
+                    "timed_out": getattr(result, "timed_out", False),
+                    "report_written": report_path.exists(),
+                }
+            )
+            return None
+
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            self._append_event(
+                {
+                    "iteration": iteration,
+                    "event": "diagnoser_invalid_json",
+                    "cache_key": cache_key,
+                    "error": str(exc),
+                }
+            )
+            return None
+
+        ok, error = validate_diagnoser_report(payload)
+        if not ok:
+            self._append_event(
+                {
+                    "iteration": iteration,
+                    "event": "diagnoser_schema_violation",
+                    "cache_key": cache_key,
+                    "error": error,
+                }
+            )
+            return None
+
+        self.diagnoser_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        self._append_event(
+            {
+                "iteration": iteration,
+                "event": "diagnoser_cache_store",
+                "cache_key": cache_key,
+                "base_iter": base_iter,
+                "reference_iterations": list(reference_iterations),
+                "failure_modes": len(payload.get("failure_modes") or []),
+            }
+        )
+        return report_path
 
     def _proposer_sandbox_config(self) -> ProposerSandboxConfig | None:
         kind = self.config.proposer_sandbox.strip().lower()

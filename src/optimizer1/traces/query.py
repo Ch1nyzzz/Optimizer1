@@ -47,8 +47,6 @@ class TraceQuery:
         """One row per (iter, candidate) trace recorded for `task_id`,
         sorted ascending by iteration. Joins traces × diffs so each row
         carries the harness status and (where applicable) score delta.
-        Also LEFT JOINs the per-(iter, candidate) rationale row when
-        available.
         """
 
         sql = """
@@ -59,36 +57,28 @@ class TraceQuery:
                 t.score        AS score,
                 d.status       AS status,
                 d.baseline_score AS baseline_score,
-                d.delta        AS delta,
-                r.hypothesis   AS hypothesis,
-                r.diagnosis    AS diagnosis
+                d.delta        AS delta
             FROM traces t
             LEFT JOIN diffs d USING (trace_id)
-            LEFT JOIN rationales r
-                ON r.iteration = t.iteration AND r.candidate_id = t.candidate_id
             WHERE t.task_id = ?
             ORDER BY t.iteration ASC, t.candidate_id ASC
         """
         with self._connect() as conn:
             rows = conn.execute(sql, (task_id,)).fetchall()
         return [
-            _drop_none_rationale_fields(
-                {
-                    "iteration": int(r["iteration"]),
-                    "candidate_id": r["candidate_id"],
-                    "passed": bool(r["passed"]),
-                    "score": float(r["score"]),
-                    "status": r["status"],
-                    "baseline_score": (
-                        float(r["baseline_score"])
-                        if r["baseline_score"] is not None
-                        else None
-                    ),
-                    "delta": float(r["delta"]) if r["delta"] is not None else None,
-                    "rationale_hypothesis": r["hypothesis"],
-                    "rationale_diagnosis": r["diagnosis"],
-                }
-            )
+            {
+                "iteration": int(r["iteration"]),
+                "candidate_id": r["candidate_id"],
+                "passed": bool(r["passed"]),
+                "score": float(r["score"]),
+                "status": r["status"],
+                "baseline_score": (
+                    float(r["baseline_score"])
+                    if r["baseline_score"] is not None
+                    else None
+                ),
+                "delta": float(r["delta"]) if r["delta"] is not None else None,
+            }
             for r in rows
         ]
 
@@ -169,28 +159,22 @@ class TraceQuery:
                 t.candidate_id AS candidate_id,
                 t.task_id      AS task_id,
                 t.score        AS score,
-                d.delta        AS delta,
-                r.hypothesis   AS hypothesis
+                d.delta        AS delta
             FROM traces t
             JOIN diffs d USING (trace_id)
-            LEFT JOIN rationales r
-                ON r.iteration = t.iteration AND r.candidate_id = t.candidate_id
             WHERE d.status = ? AND t.iteration >= ?
             ORDER BY t.iteration ASC, t.task_id ASC
         """
         with self._connect() as conn:
             rows = conn.execute(sql, (STATUS_BREAKTHROUGH, since_iter)).fetchall()
         return [
-            _drop_none_rationale_fields(
-                {
-                    "iteration": int(r["iteration"]),
-                    "candidate_id": r["candidate_id"],
-                    "task_id": r["task_id"],
-                    "score": float(r["score"]),
-                    "delta": float(r["delta"]) if r["delta"] is not None else None,
-                    "rationale_hypothesis": r["hypothesis"],
-                }
-            )
+            {
+                "iteration": int(r["iteration"]),
+                "candidate_id": r["candidate_id"],
+                "task_id": r["task_id"],
+                "score": float(r["score"]),
+                "delta": float(r["delta"]) if r["delta"] is not None else None,
+            }
             for r in rows
         ]
 
@@ -215,33 +199,27 @@ class TraceQuery:
                     t.task_id      AS task_id,
                     t.score        AS score,
                     d.baseline_score AS baseline_score,
-                    d.delta        AS delta,
-                    r.diagnosis    AS diagnosis
+                    d.delta        AS delta
                 FROM traces t
                 JOIN diffs d USING (trace_id)
-                LEFT JOIN rationales r
-                    ON r.iteration = t.iteration AND r.candidate_id = t.candidate_id
                 WHERE d.status = ? AND t.iteration >= ?
                 ORDER BY t.iteration DESC, t.task_id ASC
                 """,
                 (STATUS_REGRESSED, cutoff),
             ).fetchall()
         return [
-            _drop_none_rationale_fields(
-                {
-                    "iteration": int(r["iteration"]),
-                    "candidate_id": r["candidate_id"],
-                    "task_id": r["task_id"],
-                    "score": float(r["score"]),
-                    "baseline_score": (
-                        float(r["baseline_score"])
-                        if r["baseline_score"] is not None
-                        else None
-                    ),
-                    "delta": float(r["delta"]) if r["delta"] is not None else None,
-                    "rationale_diagnosis": r["diagnosis"],
-                }
-            )
+            {
+                "iteration": int(r["iteration"]),
+                "candidate_id": r["candidate_id"],
+                "task_id": r["task_id"],
+                "score": float(r["score"]),
+                "baseline_score": (
+                    float(r["baseline_score"])
+                    if r["baseline_score"] is not None
+                    else None
+                ),
+                "delta": float(r["delta"]) if r["delta"] is not None else None,
+            }
             for r in rows
         ]
 
@@ -326,25 +304,9 @@ class TraceQuery:
                     (iteration,),
                 ).fetchall()
             ]
-            rationale_row = conn.execute(
-                "SELECT hypothesis, diagnosis, next_signal, rationale_path "
-                "FROM rationales WHERE iteration = ? AND candidate_id = ?",
-                (iteration, candidate_id),
-            ).fetchone()
-
-        rationale_block = (
-            {
-                "hypothesis": rationale_row["hypothesis"],
-                "diagnosis": rationale_row["diagnosis"],
-                "next_signal": rationale_row["next_signal"],
-                "rationale_path": rationale_row["rationale_path"],
-            }
-            if rationale_row is not None
-            else None
-        )
 
         if row is None or (row["n_traces"] or 0) == 0:
-            out = {
+            return {
                 "iteration": iteration,
                 "candidate_id": candidate_id,
                 "n_traces": 0,
@@ -361,40 +323,22 @@ class TraceQuery:
                     "no_baseline": 0,
                 },
             }
-        else:
-            out = {
-                "iteration": iteration,
-                "candidate_id": candidate_id,
-                "n_traces": int(row["n_traces"] or 0),
-                "passrate": float(row["passrate"]) if row["passrate"] is not None else None,
-                "mean_score": (
-                    float(row["mean_score"]) if row["mean_score"] is not None else None
-                ),
-                "jsonl_path": row["jsonl_path"],
-                "modified_paths": modified_paths,
-                "status_counts": {
-                    "regressed": int(row["regressed"] or 0),
-                    "breakthrough": int(row["breakthrough"] or 0),
-                    "stable_pass": int(row["stable_pass"] or 0),
-                    "persistent_fail": int(row["persistent_fail"] or 0),
-                    "baseline": int(row["baseline"] or 0),
-                    "no_baseline": int(row["no_baseline"] or 0),
-                },
-            }
-        if rationale_block is not None:
-            out["rationale"] = rationale_block
-        return out
-
-
-def _drop_none_rationale_fields(row: dict[str, Any]) -> dict[str, Any]:
-    """Strip rationale_* keys whose value is None.
-
-    Keeps the JSON output tight when no rationale was generated; other
-    columns are kept as-is even if None (their None-ness is meaningful).
-    """
-
-    return {
-        k: v
-        for k, v in row.items()
-        if not (k.startswith("rationale_") and v is None)
-    }
+        return {
+            "iteration": iteration,
+            "candidate_id": candidate_id,
+            "n_traces": int(row["n_traces"] or 0),
+            "passrate": float(row["passrate"]) if row["passrate"] is not None else None,
+            "mean_score": (
+                float(row["mean_score"]) if row["mean_score"] is not None else None
+            ),
+            "jsonl_path": row["jsonl_path"],
+            "modified_paths": modified_paths,
+            "status_counts": {
+                "regressed": int(row["regressed"] or 0),
+                "breakthrough": int(row["breakthrough"] or 0),
+                "stable_pass": int(row["stable_pass"] or 0),
+                "persistent_fail": int(row["persistent_fail"] or 0),
+                "baseline": int(row["baseline"] or 0),
+                "no_baseline": int(row["no_baseline"] or 0),
+            },
+        }

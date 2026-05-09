@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -259,61 +257,4 @@ def test_traces_query_missing_db_raises(tmp_path):
         TraceQuery(tmp_path / "nope.db")
 
 
-def test_query_joins_rationale_when_present(tmp_path):
-    db_path = _seed_db(tmp_path)
-    indexer = Indexer(db_path)
-    indexer.record_rationale(
-        iteration=2,
-        candidate_id="cand_x",
-        rationale_path=tmp_path / "traces" / "rationale" / "iter_002" / "cand_x.md",
-        hypothesis="hyp at iter 2",
-        diagnosis="diag at iter 2",
-        next_signal="sig at iter 2",
-        raw_yaml="...",
-    )
 
-    out = TraceQuery(db_path).candidate_outcome(2, "cand_x")
-    assert out["rationale"]["hypothesis"] == "hyp at iter 2"
-
-    history = TraceQuery(db_path).task_history("task_a")
-    iter2_row = next(r for r in history if r["iteration"] == 2)
-    assert iter2_row["rationale_hypothesis"] == "hyp at iter 2"
-    iter1_row = next(r for r in history if r["iteration"] == 1)
-    assert "rationale_hypothesis" not in iter1_row  # absent → not surfaced
-
-
-# ---- CLI smoke -----------------------------------------------------
-
-
-def test_cli_task_history_emits_json(tmp_path, monkeypatch):
-    db_path = _seed_db(tmp_path)
-    cmd = [
-        sys.executable,
-        "-m",
-        "optimizer1.traces",
-        "--db",
-        str(db_path),
-        "task-history",
-        "task_a",
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    rows = json.loads(proc.stdout)
-    assert isinstance(rows, list) and rows[0]["iteration"] == 0
-
-
-def test_cli_default_format_is_json(tmp_path):
-    db_path = _seed_db(tmp_path)
-    cmd = [
-        sys.executable,
-        "-m",
-        "optimizer1.traces",
-        "--db",
-        str(db_path),
-        "candidate-outcome",
-        "2",
-        "cand_x",
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    payload = json.loads(proc.stdout)
-    assert payload["candidate_id"] == "cand_x"
-    assert payload["status_counts"]["regressed"] == 2

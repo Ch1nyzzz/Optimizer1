@@ -42,7 +42,11 @@ def test_progressive_prompt_uses_workspace_summaries_and_reference_iterations():
     assert "diagnostic\nreferences only" in prompt
     assert "source parent" in prompt
     assert "UCB" not in prompt
-    assert "bandit" not in prompt.lower()
+    # Bandit policy section must not be emitted for non-bandit policies.
+    # The role policies in CLAUDE.md may mention "bandit" in passing as
+    # one of the optional iteration blocks, so we test the section
+    # title rather than the bare word.
+    assert "Bandit Context Policy" not in prompt
     assert "parent_candidate_id" not in prompt
     assert '"reference_iterations": [2, 3]' in prompt
     assert "`candidate_results/**`" in prompt

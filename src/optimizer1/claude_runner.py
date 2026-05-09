@@ -26,6 +26,18 @@ from typing import Any
 
 DEFAULT_OPENCODE_MODEL = "deepseek/deepseek-v4-pro"
 OPENCODE_EXECUTABLE = "opencode"
+CLAUDE_EXECUTABLE = "claude"
+DEFAULT_CLAUDE_MODEL = "deepseek-v4-pro[1m]"
+DEFAULT_CLAUDE_BASE_URL = "https://api.deepseek.com/anthropic"
+# Env vars set when routing Claude Code to a third-party endpoint.
+# These are the cache-friendly defaults for DeepSeek/Kimi/etc.
+_CLAUDE_THIRD_PARTY_ENV: dict[str, str] = {
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK": "1",
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+    "DISABLE_TELEMETRY": "1",
+}
 DEFAULT_DOCKER_ENV_VARS = (
     "DEEPSEEK_API_KEY",
     "OPENCODE_API_KEY",
@@ -83,6 +95,10 @@ class _PreparedAgentCommand:
 
 def has_opencode_cli() -> bool:
     return shutil.which(OPENCODE_EXECUTABLE) is not None
+
+
+def has_claude_cli() -> bool:
+    return shutil.which(CLAUDE_EXECUTABLE) is not None
 
 
 def _uses_docker_sandbox(sandbox: ProposerSandboxConfig | None) -> bool:
@@ -196,26 +212,46 @@ def run_code_agent_prompt(
     model: str,
     timeout_s: int = 2400,
     sandbox: ProposerSandboxConfig | None = None,
+    claude_base_url: str | None = None,
+    claude_auth_token: str | None = None,
+    claude_agent_name: str | None = None,
 ) -> ClaudeResult:
     """Run the configured proposer code agent.
 
-    Only ``agent="opencode"`` is supported. Any other value raises
-    ``ValueError`` so misconfigured callers fail loudly.
+    Supported values for ``agent``: ``"opencode"`` and ``"claude"``.
+
+    ``claude_agent_name`` is forwarded to ``claude --agent <name>`` so
+    the main session runs as the named ``.claude/agents/<name>.md``
+    subagent (its frontmatter supplies the system prompt and tool
+    allowlist). Ignored for OpenCode, which has no equivalent.
     """
 
     normalized = agent.strip().lower()
-    if normalized != "opencode":
-        raise ValueError(
-            f"unsupported proposer agent: {agent!r}; only 'opencode' is supported"
+    if normalized == "opencode":
+        return run_opencode_prompt(
+            prompt,
+            cwd=cwd,
+            log_dir=log_dir,
+            name=name,
+            model=model,
+            timeout_s=timeout_s,
+            sandbox=sandbox,
         )
-    return run_opencode_prompt(
-        prompt,
-        cwd=cwd,
-        log_dir=log_dir,
-        name=name,
-        model=model,
-        timeout_s=timeout_s,
-        sandbox=sandbox,
+    if normalized == "claude":
+        return run_claude_prompt(
+            prompt,
+            cwd=cwd,
+            log_dir=log_dir,
+            name=name,
+            model=model,
+            timeout_s=timeout_s,
+            sandbox=sandbox,
+            base_url=claude_base_url,
+            auth_token=claude_auth_token,
+            agent_name=claude_agent_name,
+        )
+    raise ValueError(
+        f"unsupported proposer agent: {agent!r}; supported: 'opencode', 'claude'"
     )
 
 
@@ -330,6 +366,346 @@ def _opencode_command(*, model: str) -> tuple[str, ...]:
         parts.extend(["--model", model])
     parts.append("-")
     return tuple(parts)
+
+
+def run_claude_prompt(
+    prompt: str,
+    *,
+    cwd: Path,
+    log_dir: Path,
+    name: str,
+    model: str = DEFAULT_CLAUDE_MODEL,
+    timeout_s: int = 2400,
+    sandbox: ProposerSandboxConfig | None = None,
+    base_url: str | None = None,
+    auth_token: str | None = None,
+    agent_name: str | None = None,
+) -> ClaudeResult:
+    """Run ``claude -p`` non-interactively and persist logs.
+
+    `claude -p --output-format stream-json` emits one JSON object per line
+    with shapes ``{type:"system",...}`` / ``{type:"assistant", message:{...}}``
+    / ``{type:"user", message:{tool_result}}`` / ``{type:"result",...}``.
+
+    When ``agent_name`` is given, ``--agent <name>`` is appended so
+    the main session runs as the named ``.claude/agents/<name>.md``
+    subagent. Its frontmatter supplies the system prompt and the
+    tool allowlist; the role / identity text never enters the user
+    message.
+    """
+
+    cwd = cwd.resolve(strict=False)
+    command = _claude_command(
+        model=model,
+        agent_name=agent_name,
+    )
+    log_dir.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    prepared = _prepare_agent_command(command, cwd=cwd, sandbox=sandbox)
+
+    if prepared.error:
+        result = ClaudeResult(
+            returncode=None,
+            timed_out=False,
+            stdout="",
+            stderr=prepared.error,
+            raw_stdout="",
+            command=prepared.command,
+            usage=None,
+            tool_access=_empty_tool_access(),
+            duration_s=0.0,
+            metrics={},
+        )
+        _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
+        return result
+
+    if not _uses_docker_sandbox(sandbox) and not has_claude_cli():
+        result = ClaudeResult(
+            returncode=None,
+            timed_out=False,
+            stdout="",
+            stderr="claude CLI not found on PATH",
+            raw_stdout="",
+            command=command,
+            usage=None,
+            tool_access=_empty_tool_access(),
+            duration_s=0.0,
+            metrics={},
+        )
+        _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
+        return result
+
+    env = _claude_env(
+        base_url=base_url,
+        auth_token=auth_token,
+        model=model,
+    )
+
+    try:
+        completed = subprocess.run(
+            prepared.command,
+            input=prompt,
+            cwd=str(prepared.run_cwd),
+            text=True,
+            capture_output=True,
+            timeout=timeout_s,
+            env=env,
+        )
+        raw_stdout = completed.stdout or ""
+        stdout, usage = _extract_claude_result(raw_stdout)
+        tool_access = _extract_claude_tool_access(raw_stdout, cwd=prepared.extract_cwd)
+        duration_s = time.time() - started
+        metrics = _extract_session_metrics(
+            usage=usage,
+            tool_access=tool_access,
+            duration_s=duration_s,
+        )
+        result = ClaudeResult(
+            returncode=completed.returncode,
+            timed_out=False,
+            stdout=stdout,
+            stderr=completed.stderr or "",
+            raw_stdout=raw_stdout,
+            command=prepared.command,
+            usage=usage,
+            tool_access=tool_access,
+            duration_s=duration_s,
+            metrics=metrics,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raw_stdout = _coerce(exc.stdout)
+        tool_access = _extract_claude_tool_access(raw_stdout, cwd=prepared.extract_cwd)
+        duration_s = time.time() - started
+        result = ClaudeResult(
+            returncode=None,
+            timed_out=True,
+            stdout=raw_stdout,
+            stderr=_coerce(exc.stderr),
+            raw_stdout=raw_stdout,
+            command=prepared.command,
+            usage=None,
+            tool_access=tool_access,
+            duration_s=duration_s,
+            metrics=_extract_session_metrics(
+                usage=None,
+                tool_access=tool_access,
+                duration_s=duration_s,
+            ),
+        )
+
+    _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
+    return result
+
+
+def _claude_command(
+    *,
+    model: str,
+    agent_name: str | None = None,
+) -> tuple[str, ...]:
+    parts: list[str] = [
+        CLAUDE_EXECUTABLE,
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",  # required by some claude versions for stream-json
+        "--permission-mode",
+        "bypassPermissions",
+    ]
+    if model:
+        parts.extend(["--model", model])
+    if agent_name:
+        parts.extend(["--agent", agent_name])
+    return tuple(parts)
+
+
+def _claude_env(
+    *,
+    base_url: str | None,
+    auth_token: str | None,
+    model: str,
+) -> dict[str, str]:
+    env: dict[str, str] = dict(os.environ)
+    resolved_base = (base_url or env.get("ANTHROPIC_BASE_URL") or DEFAULT_CLAUDE_BASE_URL).strip()
+    env["ANTHROPIC_BASE_URL"] = resolved_base
+    resolved_token = (
+        auth_token
+        or env.get("ANTHROPIC_AUTH_TOKEN")
+        or env.get("DEEPSEEK_API_KEY")
+        or env.get("ANTHROPIC_API_KEY")
+        or ""
+    ).strip()
+    if resolved_token:
+        env["ANTHROPIC_AUTH_TOKEN"] = resolved_token
+    if model:
+        env["ANTHROPIC_MODEL"] = model
+    for key, value in _CLAUDE_THIRD_PARTY_ENV.items():
+        env[key] = value
+    return env
+
+
+def _extract_claude_result(raw_stdout: str) -> tuple[str, dict[str, Any] | None]:
+    """Parse Claude Code stream-json events.
+
+    Returns the assistant's final text and a usage dict aggregated across
+    assistant messages and the terminal `result` event.
+    """
+
+    text_chunks: list[str] = []
+    usage: dict[str, Any] = {}
+    for event in _jsonl_events(raw_stdout):
+        et = str(event.get("type") or "")
+        if et == "assistant":
+            message = event.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if (
+                            isinstance(block, dict)
+                            and block.get("type") == "text"
+                            and isinstance(block.get("text"), str)
+                        ):
+                            text_chunks.append(block["text"])
+                msg_usage = message.get("usage")
+                if isinstance(msg_usage, dict):
+                    usage["usage"] = _merge_usage_dicts(
+                        usage.get("usage")
+                        if isinstance(usage.get("usage"), dict)
+                        else {},
+                        msg_usage,
+                    )
+        elif et == "result":
+            for key in ("result", "message", "text"):
+                value = event.get(key)
+                if isinstance(value, str) and value:
+                    text_chunks.append(value)
+                    break
+            res_usage = event.get("usage")
+            if isinstance(res_usage, dict):
+                usage["usage"] = _merge_usage_dicts(
+                    usage.get("usage") if isinstance(usage.get("usage"), dict) else {},
+                    res_usage,
+                )
+            for key in (
+                "total_cost_usd",
+                "duration_ms",
+                "duration_api_ms",
+                "num_turns",
+                "session_id",
+            ):
+                if key in event:
+                    usage[key] = event[key]
+    return "\n".join(text_chunks) or raw_stdout, usage or None
+
+
+def _extract_claude_tool_access(
+    raw_stdout: str, *, cwd: Path | str | None = None
+) -> dict[str, Any]:
+    """Walk Claude Code stream-json for tool_use blocks."""
+
+    tool_uses: list[dict[str, Any]] = []
+    files_read: dict[str, dict[str, int]] = {}
+    files_written: dict[str, dict[str, int]] = {}
+    grep_requests: list[dict[str, Any]] = []
+    pending_outputs: dict[str, str] = {}
+
+    # First pass: collect tool_result outputs by tool_use_id (Claude emits
+    # them in subsequent {"type":"user", "message":{"content":[tool_result]}})
+    for event in _jsonl_events(raw_stdout):
+        if str(event.get("type")) != "user":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+            ):
+                use_id = block.get("tool_use_id")
+                output = block.get("content")
+                if isinstance(output, list):
+                    parts: list[str] = []
+                    for part in output:
+                        if isinstance(part, dict) and isinstance(part.get("text"), str):
+                            parts.append(part["text"])
+                    output = "\n".join(parts)
+                if isinstance(use_id, str) and isinstance(output, str):
+                    pending_outputs[use_id] = output
+
+    # Second pass: walk assistant tool_use blocks
+    for event in _jsonl_events(raw_stdout):
+        if str(event.get("type")) != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name") or "")
+            tool_input = (
+                block.get("input") if isinstance(block.get("input"), dict) else {}
+            )
+            use_id = block.get("id") or ""
+            record: dict[str, Any] = {
+                "id": use_id,
+                "name": name,
+                "input": tool_input,
+            }
+            output = pending_outputs.get(use_id, "")
+            if output:
+                record["_output"] = output
+            tool_uses.append(record)
+            path = _tool_path(tool_input)
+            if path and name in {"Read", "read_file"}:
+                rel = _make_relative(path, cwd)
+                current = files_read.setdefault(rel, {"reads": 0, "lines": 0})
+                current["reads"] += 1
+            elif path and name in {"Write", "Edit", "apply_patch", "write_file"}:
+                _add_written_lines(
+                    files_written,
+                    _make_relative(path, cwd),
+                    _count_text_lines(
+                        tool_input.get("content") or tool_input.get("new_string")
+                    ),
+                )
+            elif name in {"Grep", "rg", "search"}:
+                grep_requests.append(
+                    {
+                        "pattern": tool_input.get("pattern") or tool_input.get("query"),
+                        "path": tool_input.get("path"),
+                        "glob": tool_input.get("glob"),
+                    }
+                )
+            elif _is_shell_tool_name(name):
+                _add_shell_command_access(
+                    record,
+                    files_read=files_read,
+                    files_written=files_written,
+                    grep_requests=grep_requests,
+                    cwd=cwd,
+                )
+
+    for record in tool_uses:
+        record.pop("_output", None)
+
+    return {
+        "read_files": sorted(files_read),
+        "grep_requests": _dedupe_dicts(grep_requests),
+        "tool_uses": tool_uses,
+        "tool_counts": dict(
+            sorted(Counter(str(item.get("name") or "") for item in tool_uses).items())
+        ),
+        "files_read": dict(sorted(files_read.items())),
+        "files_written": dict(sorted(files_written.items())),
+    }
 
 
 def _extract_opencode_result(raw_stdout: str) -> tuple[str, dict[str, Any] | None]:

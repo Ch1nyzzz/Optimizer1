@@ -53,6 +53,7 @@ LOCOMO_WORKSPACE_SPEC = BenchmarkWorkspaceSpec(
         "upstream.py",
         "scaffolds/__init__.py",
         "scaffolds/base.py",
+        "scaffolds/bm25_scaffold.py",
         "scaffolds/memgpt_scaffold.py",
         "utils/__init__.py",
         "utils/text.py",

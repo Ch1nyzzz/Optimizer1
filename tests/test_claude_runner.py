@@ -385,11 +385,11 @@ def test_run_code_agent_prompt_dispatches_to_opencode(tmp_path, monkeypatch):
     assert captured["sandbox"] is None
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex", "kimi", "anything-else"])
-def test_run_code_agent_prompt_rejects_non_opencode_agents(tmp_path, agent):
+@pytest.mark.parametrize("agent", ["codex", "kimi", "anything-else"])
+def test_run_code_agent_prompt_rejects_unsupported_agents(tmp_path, agent):
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
-    with pytest.raises(ValueError, match="only 'opencode' is supported"):
+    with pytest.raises(ValueError, match="unsupported proposer agent"):
         run_code_agent_prompt(
             "prompt",
             agent=agent,
