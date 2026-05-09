@@ -7,25 +7,25 @@ from memomemo.model import LocalModelClient
 from memomemo.scaffolds.base import RetrievalMemoryScaffold, ScaffoldConfig, ScaffoldRun
 
 
-def test_source_family_build_cache_reuses_one_state_per_sample(tmp_path) -> None:
+def test_source_family_build_cache_is_disabled_for_memgpt_only_build(tmp_path) -> None:
     scaffold = CountingRetrievalScaffold()
     examples = _examples({"sample-a": 3, "sample-b": 2})
     runner = EvaluationRunner(examples=examples, out_dir=tmp_path, dry_run=True, max_eval_workers=4)
 
     result = runner.evaluate_scaffold(
         scaffold=scaffold,
-        scaffold_name="candidate_mem0",
-        config=ScaffoldConfig(top_k=1, extra={"source_family": "mem0"}),
-        candidate_id="candidate_mem0_top1",
+        scaffold_name="candidate_memgpt",
+        config=ScaffoldConfig(top_k=1, extra={"source_family": "memgpt"}),
+        candidate_id="candidate_memgpt_top1",
     )
 
     assert result.count == 5
-    assert Counter(scaffold.build_sample_ids) == {"sample-a": 1, "sample-b": 1}
-    payload = (tmp_path / "candidate_results" / "candidate_mem0_top1.json").read_text(
+    assert Counter(scaffold.build_sample_ids) == {"sample-a": 3, "sample-b": 2}
+    payload = (tmp_path / "candidate_results" / "candidate_memgpt_top1.json").read_text(
         encoding="utf-8"
     )
-    assert '"enabled": true' in payload
-    assert '"sample_count": 2' in payload
+    assert '"enabled": false' in payload
+    assert '"sample_count": 0' in payload
 
 
 def test_build_cache_is_not_used_for_plain_scaffolds(tmp_path) -> None:
@@ -43,14 +43,14 @@ def test_build_cache_is_not_used_for_plain_scaffolds(tmp_path) -> None:
     assert scaffold.build_sample_ids == ["sample-a", "sample-a", "sample-a"]
 
 
-def test_build_cache_reuses_across_candidates_with_same_build_tag(tmp_path) -> None:
+def test_memgpt_source_family_does_not_reuse_build_cache_across_candidates(tmp_path) -> None:
     first = CountingRetrievalScaffold()
     second = CountingRetrievalScaffold()
     examples = _examples({"sample-a": 3, "sample-b": 2})
     runner = EvaluationRunner(examples=examples, out_dir=tmp_path, dry_run=True)
     config = ScaffoldConfig(
         top_k=1,
-        extra={"source_family": "mem0", "build_tag": "same-build"},
+        extra={"source_family": "memgpt", "build_tag": "same-build"},
     )
 
     runner.evaluate_scaffold(
@@ -66,16 +66,16 @@ def test_build_cache_reuses_across_candidates_with_same_build_tag(tmp_path) -> N
         candidate_id="second_candidate_top1",
     )
 
-    assert Counter(first.build_sample_ids) == {"sample-a": 1, "sample-b": 1}
-    assert second.build_sample_ids == []
+    assert Counter(first.build_sample_ids) == {"sample-a": 3, "sample-b": 2}
+    assert Counter(second.build_sample_ids) == {"sample-a": 3, "sample-b": 2}
     payload = (tmp_path / "candidate_results" / "second_candidate_top1.json").read_text(
         encoding="utf-8"
     )
-    assert '"built_samples": []' in payload
-    assert '"reused_samples": [' in payload
+    assert '"enabled": false' in payload
+    assert '"reused_samples": []' in payload
 
 
-def test_build_cache_rebuilds_when_build_tag_changes(tmp_path) -> None:
+def test_memgpt_source_family_builds_per_example_when_build_tag_changes(tmp_path) -> None:
     first = CountingRetrievalScaffold()
     second = CountingRetrievalScaffold()
     examples = _examples({"sample-a": 3})
@@ -84,18 +84,18 @@ def test_build_cache_rebuilds_when_build_tag_changes(tmp_path) -> None:
     runner.evaluate_scaffold(
         scaffold=first,
         scaffold_name="first_candidate",
-        config=ScaffoldConfig(top_k=1, extra={"source_family": "mem0", "build_tag": "old"}),
+        config=ScaffoldConfig(top_k=1, extra={"source_family": "memgpt", "build_tag": "old"}),
         candidate_id="first_candidate_top1",
     )
     runner.evaluate_scaffold(
         scaffold=second,
         scaffold_name="second_candidate",
-        config=ScaffoldConfig(top_k=1, extra={"source_family": "mem0", "build_tag": "new"}),
+        config=ScaffoldConfig(top_k=1, extra={"source_family": "memgpt", "build_tag": "new"}),
         candidate_id="second_candidate_top1",
     )
 
-    assert first.build_sample_ids == ["sample-a"]
-    assert second.build_sample_ids == ["sample-a"]
+    assert first.build_sample_ids == ["sample-a", "sample-a", "sample-a"]
+    assert second.build_sample_ids == ["sample-a", "sample-a", "sample-a"]
 
 
 def test_build_cache_preserves_custom_answer_method(tmp_path) -> None:
@@ -104,9 +104,9 @@ def test_build_cache_preserves_custom_answer_method(tmp_path) -> None:
 
     result = runner.evaluate_scaffold(
         scaffold=scaffold,
-        scaffold_name="candidate_mem0",
-        config=ScaffoldConfig(top_k=1, extra={"source_family": "mem0"}),
-        candidate_id="candidate_mem0_top1",
+        scaffold_name="candidate_memgpt",
+        config=ScaffoldConfig(top_k=1, extra={"source_family": "memgpt"}),
+        candidate_id="candidate_memgpt_top1",
     )
 
     assert result.passrate == 1.0

@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+_LOCAL_SRC = Path(__file__).resolve().parents[1]
+if str(_LOCAL_SRC) not in sys.path[:1]:
+    sys.path.insert(0, str(_LOCAL_SRC))
+
 from memomemo.cli import main
 
 __all__ = ["main"]

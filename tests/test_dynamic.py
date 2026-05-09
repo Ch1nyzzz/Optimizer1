@@ -5,9 +5,12 @@ from memomemo.scaffolds.base import MemoryScaffold
 
 
 def test_load_builtin_candidate_scaffold():
-    scaffold = load_candidate_scaffold({"scaffold_name": "bm25"}, project_root=Path.cwd())
+    scaffold = load_candidate_scaffold(
+        {"scaffold_name": "memgpt_source"},
+        project_root=Path.cwd(),
+    )
     assert isinstance(scaffold, MemoryScaffold)
-    assert scaffold.name == "bm25"
+    assert scaffold.name == "memgpt_source"
 
 
 def test_load_run_local_generated_candidate(tmp_path):
@@ -16,9 +19,9 @@ def test_load_run_local_generated_candidate(tmp_path):
     generated_dir.joinpath("run_candidate.py").write_text(
         "\n".join(
             [
-                "from memomemo.scaffolds.bm25_scaffold import RankBM25Scaffold",
+                "from memomemo.scaffolds.memgpt_scaffold import MemGPTSourceScaffold",
                 "",
-                "class RunCandidateScaffold(RankBM25Scaffold):",
+                "class RunCandidateScaffold(MemGPTSourceScaffold):",
                 '    name = "run_candidate"',
                 "",
             ]

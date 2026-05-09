@@ -177,17 +177,18 @@ def test_optimizer_can_disable_default_docker_sandbox(tmp_path):
     "selection_policy",
     ["progressive", "bandit", "random", "recent", "best"],
 )
-def test_adaptive_selection_policies_require_docker_sandbox(tmp_path, selection_policy):
-    with pytest.raises(ValueError, match="requires --proposer-sandbox docker"):
-        LocomoOptimizer(
-            LocomoOptimizerConfig(
-                run_id="r",
-                out_dir=tmp_path,
-                selection_policy=selection_policy,
-                proposer_sandbox="none",
-                proposer_docker_image="memo-proposer:test",
-            )
+def test_adaptive_selection_policies_allow_direct_opencode_init(tmp_path, selection_policy):
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            selection_policy=selection_policy,
+            proposer_sandbox="none",
+            proposer_docker_image="memo-proposer:test",
         )
+    )
+
+    assert optimizer._proposer_sandbox_config() is None
 
 
 def test_optimizer_uses_opencode_default_docker_image(tmp_path):
@@ -239,8 +240,7 @@ def test_optimizer_can_run_opencode_proposer_agent(tmp_path, monkeypatch):
 
     assert captured["agent"] == "opencode"
     assert captured["model"] == "anthropic/claude-test"
-    assert captured["sandbox"].kind == "docker"
-    assert captured["sandbox"].docker_image == "docker-opencode:latest"
+    assert captured["sandbox"] is None
 
 
 @pytest.mark.parametrize(

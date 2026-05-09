@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from memomemo.benchmark_tasks import TASK_CHOICES, normalize_task_name, task_spec
@@ -39,6 +40,7 @@ from memomemo.scaffolds import (
 
 
 def main() -> int:
+    _load_project_env()
     parser = argparse.ArgumentParser(prog="optiharness")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -330,7 +332,7 @@ def main() -> int:
     optimize.add_argument(
         "--proposer-sandbox",
         choices=("none", "docker"),
-        default="docker",
+        default="none",
         help="Run proposer code agents directly or inside a Docker filesystem sandbox.",
     )
     optimize.add_argument(
@@ -739,6 +741,28 @@ def _csv_many(values: list[str] | tuple[str, ...]) -> list[str]:
     for value in values:
         out.extend(_csv(value))
     return out
+
+
+def _load_project_env() -> None:
+    """Load simple KEY=VALUE entries from the project .env without overriding env."""
+
+    env_path = Path(__file__).resolve().parents[2] / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key.startswith("export "):
+            key = key.removeprefix("export ").strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
 
 
 def _scaffold_extra(value: str | None) -> dict[str, dict[str, object]]:

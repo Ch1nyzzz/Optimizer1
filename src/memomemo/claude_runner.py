@@ -24,9 +24,11 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_OPENCODE_MODEL = "anthropic/claude-sonnet-4-5"
+DEFAULT_OPENCODE_MODEL = "deepseek/deepseek-v4-pro"
 OPENCODE_EXECUTABLE = "opencode"
 DEFAULT_DOCKER_ENV_VARS = (
+    "DEEPSEEK_API_KEY",
+    "OPENCODE_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "HTTP_PROXY",

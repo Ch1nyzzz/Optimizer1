@@ -48,7 +48,8 @@ def test_progressive_prompt_uses_workspace_summaries_and_reference_iterations():
     assert "`candidate_results/**`" in prompt
     assert "build/database-construction logic" in prompt
     assert "amem_source_path" not in prompt
-    assert "mem0_source_path" in prompt
+    assert "mem0_source_path" not in prompt
+    assert "memgpt_source_path" in prompt
     assert "fresh `source_base_dir`" in prompt
     assert "source bases" in prompt
     assert "expensive" in prompt

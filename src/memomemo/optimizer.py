@@ -99,7 +99,7 @@ class OptimizerConfig:
     bandit_reward_clip: float = 2.0
     bandit_failed_iter_penalty: float = 0.5
     pareto_quality_threshold: float = 0.125
-    proposer_sandbox: str = "docker"
+    proposer_sandbox: str = "none"
     proposer_docker_image: str = ""
     proposer_docker_workspace: str = "/workspace"
     proposer_docker_env: tuple[str, ...] = ()
@@ -195,6 +195,8 @@ class LocomoOptimizer:
             )
 
     def _validate_proposer_sandbox_policy(self) -> None:
+        if self.config.proposer_agent.strip().lower() == "opencode":
+            return
         policy = self.config.selection_policy.strip().lower()
         if policy not in {"progressive", "bandit", "random", "recent", "best", "curai", "curaii"}:
             return
@@ -455,11 +457,6 @@ class LocomoOptimizer:
                 existing_candidates=existing_candidates,
                 call_dir=call_dir,
                 reference_iterations_override=refs_override,
-                trace_scope_override=(
-                    str(bandit_policy.get("trace_scope"))
-                    if bandit_policy and bandit_policy.get("trace_scope")
-                    else None
-                ),
                 bandit_policy=bandit_policy,
                 base_iter=curaii_base_iter,
             )
@@ -860,12 +857,12 @@ class LocomoOptimizer:
             dest.write_text(json.dumps(assignment, indent=2, ensure_ascii=False), encoding="utf-8")
 
         self._copy_workspace_summaries(workspace_dir / "summaries")
-        self._copy_workspace_traces(workspace_dir / "traces")
+        if self._harness_active:
+            self._copy_workspace_traces(workspace_dir / "traces")
         self._copy_reference_iterations(
             workspace_dir / "reference_iterations",
             reference_iterations=reference_iterations,
-            budget=budget,
-            trace_scope=trace_scope_override,
+            trace_scope=trace_scope_override or self._trace_scope_for_budget(budget),
         )
         self._build_source_snapshot_workspace(
             iteration=iteration,
@@ -893,9 +890,8 @@ class LocomoOptimizer:
     def _copy_workspace_traces(self, dest: Path) -> None:
         """Mirror run-level `traces/` into the proposer workspace.
 
-        Only fires under `--trace-backend=harness`. The proposer reads
-        these files via the workspace mount; run-level paths are not
-        directly accessible inside the sandbox, so we copy.
+        The proposer reads these files via the workspace mount; run-level
+        paths are not directly accessible inside the sandbox, so we copy.
         """
 
         if self.trace_harness is None:
@@ -937,11 +933,10 @@ class LocomoOptimizer:
         reference_dir: Path,
         *,
         reference_iterations: tuple[int, ...],
-        budget: str,
         trace_scope: str | None = None,
     ) -> None:
+        trace_scope = trace_scope or "all"
         reference_dir.mkdir(parents=True, exist_ok=True)
-        trace_scope = trace_scope or self._trace_scope_for_budget(budget)
         for item in reference_iterations:
             src = self._iteration_dir(item)
             if not src.exists():
