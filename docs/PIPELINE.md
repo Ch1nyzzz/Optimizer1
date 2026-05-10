@@ -1,23 +1,92 @@
 # Optimizer1 Optimization Pipeline
 
 This document consolidates, in one place, the Optimizer1 proposer/evaluator
-optimization loop, the three context-selection policies
-(**default / progressive / bandit v3**), and the experimental results
-collected so far. After reading it you should be able to:
+optimization loop, the **main pushed algorithm — Optimal1** — and its
+**meta-harness baseline**, plus the per-policy menu (default / progressive /
+bandit v3 / pareto / curai / curaii) that Optimal1 selects from. After
+reading it you should be able to:
 
 1. Read `src/optimizer1/optimizer.py` and follow the outer loop end-to-end;
-2. Make an informed choice between the three policies;
-3. Reproduce or extend the existing results on LoCoMo / LongMemEval / SWE-bench mini.
+2. Tell Optimal1 apart from the meta-harness baseline at a CLI-flag level;
+3. Make an informed choice among the underlying selection policies;
+4. Reproduce or extend the existing results on LoCoMo / LongMemEval /
+   SWE-bench mini.
 
-Detailed per-run numbers, cost tables, and the full set of run paths still
-live in [`EXPERIMENT_RESULTS.md`](../EXPERIMENT_RESULTS.md) at the repo root;
-this document only excerpts the headline numbers. Cross-run observations about
-where breakthroughs occur across budget tiers are tracked in
-[`EXPERIMENT_INSIGHTS.md`](EXPERIMENT_INSIGHTS.md).
+Per-cell result tables live in
+[`experiment_detail.md`](experiment_detail.md); cross-run observations
+about where breakthroughs occur across budget tiers are tracked in
+[`EXPERIMENT_INSIGHTS.md`](EXPERIMENT_INSIGHTS.md). This document
+excerpts the headline numbers in §7.
 
 ---
 
-## 0. Shared Skeleton (used by all three policies)
+## 0. Optimal1 vs the meta-harness baseline
+
+Optimal1 is the algorithm this repo pushes. The reference comparison arm
+is the **meta-harness baseline**, which mirrors the older
+`skillevolve` / `meta-harness` proposer loop: the Claude Code proposer
+gets nothing except its docker workspace, the deployed
+`.claude/agents/proposer.md` subagent system prompt, the auto-loaded
+`CLAUDE.md` constraints, and the cumulative summaries on disk. Both
+arms are launched side-by-side from
+[`scripts/launch_claude_native_baseline_vs_optimal1.sh`](../scripts/launch_claude_native_baseline_vs_optimal1.sh).
+
+Both arms share **everything** that is not part of the algorithm under
+test: docker sandbox, Claude Code OAuth (`--claude-native-auth`), the
+`memgpt_source` seed, the same scaffold seed candidates, the eval
+stack, iteration count, split. Only three components flip:
+
+| component                    | meta-harness baseline                                              | Optimal1                                                                 | wired in                                                                                  |
+|------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
+| `--selection-policy`         | `default` — fixed-high context, fixed baseline patch base          | `pareto` — fixed-high context, but patch base resampled from the current passrate × token_consuming Pareto frontier | `optimizer.py::_pareto_select_base` / `_run_progressive_proposer_iteration`               |
+| `--diagnose` subagent        | off (no per-iteration diagnoser pass)                              | on — `diagnoser` subagent runs once per iteration, writes `diagnoser_report.md` | `prompts/diagnoser.md` deployed to `<workspace>/.claude/agents/diagnoser.md`              |
+| trace-harness exposure       | `--proposer-no-trace-harness-section` (no MCP server, raw trace artifacts only) | trace MCP server registered with six `trace_*` tools, including `trace_similar` lazy embedding | `traces/mcp_server.py` registered via `_write_proposer_agent_config` → `settings.local.json` |
+| historian subagent           | off                                                                | deployed for any stagnation-eligible policy; invoked when `stagnation_count >= 1` | `prompts/historian.md` deployed to `<workspace>/.claude/agents/historian.md`              |
+
+The historian is bundled with Optimal1 because it is gated by
+`selection_policy in {"pareto", "curai", "curaii"}`
+(`optimizer.py::_uses_claude_subagent_historian`), so flipping the
+policy from `default` to `pareto` is what makes the historian path
+reachable.
+
+**Why those three deltas, in one line each:**
+
+- `pareto` policy fixes the saturation mode flagged in
+  `EXPERIMENT_INSIGHTS.md` ("Each iteration freelances on top of the
+  baseline"). Resampling the patch base from the frontier rotates the
+  starting point, so validated `+add` blocks survive into the next
+  iteration's diff base instead of having to be re-derived from a
+  digest.
+- `--diagnose` converts each iteration from open-ended search into a
+  directed fix task. The diagnoser walks `traces/` and the candidate
+  source snapshot, then writes a structured failure-mode report at
+  `diagnoser_report.md`. The proposer reads it as hypothesis input;
+  the diagnoser does **not** propose fix directions — that is the
+  proposer's job.
+- The trace MCP tools (`trace_iteration_metadata`,
+  `trace_compare_iterations`, `trace_list_tasks`,
+  `trace_task_history`, `trace_candidate_outcome`, `trace_similar`)
+  let the proposer query trace history without grepping markdown.
+  `trace_similar` is the key one: it lazily embeds historical diffs
+  and the proposer's query at call time using
+  `DIFF_EMBEDDING_MODEL` against the OpenAI-compatible endpoint
+  exported via `OPENAI_BASE_URL`/`OPENAI_API_KEY`.
+- The historian only runs when `stagnation_count >= 1` and reads the
+  recent stalled iters' diffs and traces to identify a shared
+  dead-end pattern, which it writes to `historian_report.md`. The
+  proposer reads it as "directions to avoid"; the historian does not
+  propose fix directions either.
+
+The shared baseline scaffolding (everything that is **not** one of those
+three deltas) is what the rest of this document describes. §1 covers
+the shared skeleton both arms execute. §2–§4 describe the older
+selection-policy menu (default / progressive / bandit v3); §5 covers
+the `pareto` policy that Optimal1 uses. §6 is the side-by-side policy
+table; §7 collects the headline experimental numbers.
+
+---
+
+## 1. Shared Skeleton (used by every policy, including Optimal1)
 
 Implemented in `LocomoOptimizer.run()` (`src/optimizer1/optimizer.py:152-284`).
 `SwebenchOptimizer` inherits the same outer loop and only overrides example
@@ -36,9 +105,9 @@ Docker sandbox mounted at `/workspace/`; it cannot see the repository root,
 the raw benchmark data, or the scoring helpers — those paths are blocked by
 `access_policy.json`.
 
-### 0.1 Per-policy prompt differences
+### 1.1 Per-policy prompt differences
 
-All three policies share the same builder
+All policies share the same builder
 (`build_progressive_proposer_prompt` in
 `src/optimizer1/proposer_prompt.py`). The base prompt is identical across
 policies — assignment header, objective, available files, edit scope,
@@ -92,17 +161,19 @@ Concrete contents per policy:
   they fill a diagnostic gap.
 
 Reference iteration count is decided **before** the prompt is built, by
-each policy's selection logic in `optimizer.py` (see §1–§3). The prompt
+each policy's selection logic in `optimizer.py` (see §2–§4). The prompt
 builder only formats whatever the policy chose. Per-iteration trace
 artifacts come from the run-level `traces/` tree mirrored into the
-proposer workspace; see §6.
+proposer workspace; the same `traces/` tree backs the MCP tools listed
+in §0 when Optimal1 has the trace-harness section enabled.
 
 ---
 
-## 1. Default Policy (fixed-high baseline)
+## 2. Default Policy (fixed-high baseline)
 
 **Entry point**: `OptimizerConfig.selection_policy = "default"`
-(`src/optimizer1/optimizer.py:220-221`).
+(`src/optimizer1/optimizer.py:220-221`). This is the policy the
+**meta-harness baseline** arm runs (see §0).
 
 **Decision rule**: every iteration is hard-coded to `budget = "high"`; no
 state is ever read or written.
@@ -114,13 +185,20 @@ state is ever read or written.
 - Largest context and highest cost per iteration (cache miss + long prompt +
   full copies of every reference iteration).
 - No feedback loop: the proposer always sees the same global view.
+- Patch base never rotates — every iteration starts from the original
+  baseline scaffold. This is the saturation mode discussed in
+  `EXPERIMENT_INSIGHTS.md`; Optimal1's `pareto` policy (§5) is the
+  fix.
 - Bare prompt: `adaptive=False` is passed to the prompt builder, so
   default does **not** receive the Optimization Focus block, the
   Progressive role hints, or the Bandit Context Policy block. It sees
   only the shared base prompt — assignment / objective / available files
-  / edit scope / quality gate / output schema. See §0.1 for the
+  / edit scope / quality gate / output schema. See §1.1 for the
   per-policy block matrix.
-- Serves as a sanity baseline for progressive / bandit.
+- Serves as the policy-side half of the meta-harness baseline arm. The
+  trace-harness exposure delta and the diagnoser/historian deltas are
+  the other two halves; flipping all three at once is what produces the
+  Optimal1 arm.
 
 **`default+direction` ablation** (`--include-optimization-direction`):
 keep default's fixed-high context schedule but inject the same
@@ -131,14 +209,14 @@ default decision logic is unchanged. Use this to measure whether the
 direction block alone (without the budget tiering or the bandit
 file-utility prior) lifts test passrate. On LoCoMo this ablation
 *reduces* test (claudekimi default 0.3382 → default+direction 0.3140,
-see EXPERIMENT_RESULTS.md §LoCoMo) while inflating cache reads
+see [`experiment_detail.md`](experiment_detail.md) LoCoMo cells) while inflating cache reads
 (2.97M → 4.43M tokens/iter); on LongMemEval it *boosts train* (claudekimi
 0.5600 → 0.6500) but the test number is still pending a Together-judge
 retry.
 
 ---
 
-## 2. Progressive Policy
+## 3. Progressive Policy
 
 **Entry point**: `OptimizerConfig.selection_policy = "progressive"`.
 **State file**: `runs/<run_id>/progressive_state.json`.
@@ -180,7 +258,7 @@ cost ends up far below default.
 
 ---
 
-## 3. Bandit v3 Policy
+## 4. Bandit v3 Policy
 
 **Entry point**: `OptimizerConfig.selection_policy = "bandit"`.
 **State file**: `runs/<run_id>/bandit_state.json`.
@@ -193,7 +271,7 @@ immediately attends to the files that have actually paid off.
 
 ![Bandit v3 decision flow](bandit_v3_decision_flow.svg)
 
-### 3.1 Top-level decision
+### 4.1 Top-level decision
 
 When iteration k starts, the optimizer reads `bandit_state.json`:
 
@@ -230,7 +308,7 @@ of the best/worst fallback. v3's `last_improvement` fallback is no longer
 used for ref-selection (it is still used for stagnation accounting in
 `_bandit_policy_for_workspace`).
 
-### 3.2 Reward (the key change in v3)
+### 4.2 Reward (the key change in v3)
 
 ```
 best_eval_passrate = max(c.passrate for c in evaluated)   # v3: passrate only
@@ -259,7 +337,7 @@ Two changes from v1/v2:
    window rather than the global best, so a single meaningful rebound
    during a stagnation stretch can still earn a positive score.
 
-### 3.3 Per-file utility update
+### 4.3 Per-file utility update
 
 Once the iteration's reward is determined:
 
@@ -309,7 +387,7 @@ policy_score = 0.7·binary_util + 0.3·reward_util − cost + bonus
 | `bandit_stagnation_threshold`   |   4     |
 | `bandit_failed_iter_penalty`    |   0.5   |
 
-### 3.4 Required core files (always hot, never scored)
+### 4.4 Required core files (always hot, never scored)
 
 `_bandit_core_files` (`src/optimizer1/optimizer.py:1951`) keeps a fixed set of
 "foundation files" pinned into the hot list regardless of statistics:
@@ -328,24 +406,76 @@ cannot demote essential files into warm/cold.
 
 ---
 
-## 4. Side-by-side comparison
+## 5. Pareto Policy (Optimal1's selection arm)
 
-| Dimension              | default              | progressive                                  | bandit v3                                            |
-|------------------------|----------------------|----------------------------------------------|------------------------------------------------------|
-| Budget selection       | always `high`        | state machine (`low`→…→`high`)               | heuristic + stagnation threshold (`low/medium/high`) |
-| Reference iterations   | full history         | by budget: best k + worst                    | hot_iters (from last_policy hot/warm) prepended, then best k + worst (cap 3 / 5; v4) |
-| Trace-scope trim       | `all`                | `last1 / last3 / all`                        | same three tiers, derived from budget                |
-| Prompt extras          | base prompt only     | + Optimization Focus + Progressive role hints | + Optimization Focus + Bandit role hints + Bandit Context Policy (hot/warm lists) |
-| Feedback signal        | none                 | did this iter enter a new frontier?          | rolling-window z-score (passrate only)               |
-| State file             | none                 | `progressive_state.json`                     | `bandit_state.json` (per-file stats)                 |
-| Explore vs exploit     | none (always max)    | implicit (only escalates on stagnation)      | explicit (UCB bonus + Beta smoothing)                |
-| Cost profile           | highest (every iter is high) | medium (most iters are low)          | medium-high (more reads + policy meta)               |
-| Strengths              | reproduces baseline; sanity check | best on LoCoMo for claudekimi    | only policy where codex54 beats progressive on LoCoMo test; bandit force=low takes LongMemEval |
-| Weaknesses             | never converges      | hard to drop back from `high` once escalated | needs a warm-up phase; mixed reward overfits train  |
+**Entry point**: `OptimizerConfig.selection_policy = "pareto"`. This is
+the policy Optimal1 uses; it sits structurally between `default` (no
+state, fixed-high context, fixed base) and the curai/curaii family
+(which add a Stagnation Forensics block and frontier-aware base
+resampling on top of `progressive`).
+
+**Decision rule**:
+
+- **Budget**: identical to `default` — every iteration runs at fixed
+  `high` context. No state-machine demotion or bandit-style heuristic.
+- **Patch base**: resampled uniformly each iteration from the current
+  passrate × token_consuming Pareto frontier
+  (`optimizer.py::_pareto_select_base` /
+  `_run_progressive_proposer_iteration`). The first iteration uses the
+  seed scaffold; from iteration 2 onward, whichever frontier members
+  exist become candidate bases.
+- **Reference iterations**: full history, like `default`.
+- **Stagnation accounting**: shared with curai/curaii via
+  `progressive_state.json`. The historian subagent is invoked once
+  `stagnation_count >= 1` (see §0).
+
+**Why pareto over default**:
+
+`default` saturates because the patch base never rotates. Validated
+`+add` blocks do not survive into the next iteration's diff base, so
+the proposer keeps "freelancing on top of the original baseline"
+rather than stacking second-layer optimizations
+(`EXPERIMENT_INSIGHTS.md` §"Default Saturation"). Pareto fixes this
+without paying the bandit's bookkeeping cost: the only extra state is
+the Pareto frontier itself, which the harness already maintains for
+`best_candidates.json`.
+
+**Why pareto over progressive/bandit for Optimal1**:
+
+Pareto preserves `default`'s fixed-high context schedule. Optimal1's
+other two deltas (diagnoser per iteration, full MCP trace tools) are
+already substantial context-side changes; layering progressive's
+budget tiering or bandit's per-file priors on top would conflate three
+moving parts. Holding the budget at `high` lets us attribute Optimal1
+gains to base resampling + diagnoser + MCP tools rather than to a
+budget heuristic.
+
+`pareto` is one of three stagnation-eligible policies (the others are
+`curai` and `curaii`); historian gating, frontier accounting, and the
+`progressive_state.json` schema are shared across all three.
 
 ---
 
-## 5. Experimental results summary
+## 6. Side-by-side comparison
+
+| Dimension              | default                                | progressive                                  | bandit v3                                            | pareto (Optimal1)                                          |
+|------------------------|----------------------------------------|----------------------------------------------|------------------------------------------------------|------------------------------------------------------------|
+| Budget selection       | always `high`                          | state machine (`low`→…→`high`)               | heuristic + stagnation threshold (`low/medium/high`) | always `high` (same as default)                            |
+| Patch base             | fixed baseline scaffold every iter     | fixed baseline scaffold every iter           | fixed baseline scaffold every iter                   | uniform sample from current Pareto frontier                |
+| Reference iterations   | full history                           | by budget: best k + worst                    | hot_iters prepended, then best k + worst (cap 3 / 5; v4) | full history (same as default)                          |
+| Trace-scope trim       | `all`                                  | `last1 / last3 / all`                        | same three tiers, derived from budget                | `all`                                                      |
+| Prompt extras          | base prompt only                       | + Optimization Focus + Progressive role hints | + Optimization Focus + Bandit role hints + Bandit Context Policy | base prompt + frontier base note + (Optimal1) historian directions when stalled |
+| Feedback signal        | none                                   | did this iter enter a new frontier?          | rolling-window z-score (passrate only)               | stagnation streak (drives historian gating)                |
+| State file             | none                                   | `progressive_state.json`                     | `bandit_state.json` (per-file stats)                 | `progressive_state.json` (shared with curai/curaii)        |
+| Stagnation-eligible    | no                                     | no                                           | no (uses its own stagnation accounting)              | yes — historian invoked when `stagnation_count >= 1`       |
+| Explore vs exploit     | none (always max)                      | implicit (only escalates on stagnation)      | explicit (UCB bonus + Beta smoothing)                | implicit (frontier resampling rotates exploration)         |
+| Cost profile           | highest (every iter is high)           | medium (most iters are low)                  | medium-high (more reads + policy meta)               | high (same context budget as default; extra cost is the diagnoser/historian/MCP layer in Optimal1) |
+| Strengths              | reproduces baseline; meta-harness arm  | best on LoCoMo for claudekimi                | only policy where codex54 beats progressive on LoCoMo test; bandit force=low takes LongMemEval | layered fix on default's saturation mode without a budget heuristic; pairs cleanly with Optimal1's diagnoser + MCP tools |
+| Weaknesses             | never converges; patch base never rotates | hard to drop back from `high` once escalated | needs a warm-up phase; mixed reward overfits train | inherits default's high cost; cost-quality trade only pays off when Optimal1's other deltas (diagnoser, MCP tools, historian) are also enabled |
+
+---
+
+## 7. Experimental results summary
 
 Each benchmark below uses a single per-(proposer, policy) table that pairs
 passrate (train + test) with per-iteration proposer cost. `input` and
@@ -357,10 +487,10 @@ test-eval dir remains). Bold cells flag the strongest result within each
 proposer family; ★ marks the overall benchmark best. The `total/iter`
 column is the sum of new input + output + cache reads per proposer
 iteration — the gross token volume that flows through the proposer per
-call. See [`EXPERIMENT_RESULTS.md`](../EXPERIMENT_RESULTS.md) for run
-paths and extended notes.
+call. See [`experiment_detail.md`](experiment_detail.md) for per-cell
+result tables and the run paths they came from.
 
-### 5.1 LoCoMo (train=80, test=1449)
+### 7.1 LoCoMo (train=80, test=1449)
 
 The bandit row is the latest sliding-window z-score variant (window=16;
 passrate-only reward for claudekimi, mixed reward for codex54). Earlier
@@ -408,7 +538,7 @@ Highlights:
   every iter without the adaptive shrink). Net: budget tier escalation
   is doing real work for LoCoMo and shouldn't be locked at `low`.
 
-### 5.2 LongMemEval (train=100, test=400)
+### 7.2 LongMemEval (train=100, test=400)
 
 bandit rows use the v3 sliding-window z-score reward (window=16,
 passrate-only). `default+direction` rows use the new
@@ -429,7 +559,7 @@ passrate-only). `default+direction` rows use the new
 The claudekimi `default+direction` and `bandit v3 (rerun)` rows are the
 2nd-attempt reruns. The 1st attempts (default+direction 1st: train 0.6500 /
 test 0.5300; bandit v3 1st: train 0.5300 / test 0.4325) are kept in
-EXPERIMENT_RESULTS.md for the historical record. The reruns are now used
+[`experiment_detail.md`](experiment_detail.md) for the historical record. The reruns are now used
 as the canonical numbers because they confirm a different stability picture:
 default+direction's 1st-run high (0.5300 test) was a lucky outlier that
 collapses to 0.4950 on rerun, while bandit v3 actually improves on rerun
@@ -462,7 +592,7 @@ Takeaways:
   force=low 0.5225, while paying 4.13M cache reads/iter (vs default
   2.12M). The mechanism direction list alone, without budget tiering or
   the bandit per-file prior, is *not* the largest lever on LongMemEval.
-### 5.3 SWE-bench mini
+### 7.3 SWE-bench mini
 
 The source-code backend (`mini_swe_agent_source`) is wired into the
 optimize CLI (`--swebench`). All SWE-bench mini test evaluations
@@ -507,7 +637,7 @@ frontier results are in
 verified_test10 (10 problems) is too small and saturates too quickly for
 the optimizer to make stable improvements.
 
-### 5.4 Overall takeaways
+### 7.4 Overall takeaways
 
 - LoCoMo best: codex54 bandit (docker, v3) @ 0.3865 test.
 - **LongMemEval new global best: claudekimi bandit force=low (v3, w16)
