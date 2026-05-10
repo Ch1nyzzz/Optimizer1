@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Launch four LoCoMo + LongMemEval runs with the new Claude OAuth proposer:
+# Launch baseline-vs-optimal1 runs across LoCoMo / LongMemEval / SWE-bench mini
+# with the Claude OAuth proposer:
 #   * baseline arm: --proposer-no-trace-harness-section (no MCP tools, raw trace only),
 #                   no --diagnose, default selection policy.
 #   * optimal1 arm: full trace tools (MCP server registered), --diagnose,
 #                    --selection-policy pareto, historian subagent triggered
 #                    on stagnation streak.
 #
-# Three positional knobs via env vars:
-#   ARMS=baseline,optimal1           which arms to launch (default: both)
-#   TASKS=locomo,longmemeval          which tasks to launch  (default: both)
-#   TS=<timestamp>                    optional; defaults to now.
+# Knobs via env vars:
+#   ARMS=baseline,optimal1                       which arms to launch (default: both)
+#   TASKS=locomo,longmemeval,swebench            which tasks to launch (default: locomo+longmemeval)
+#   TS=<timestamp>                               optional; defaults to now.
+#   ITERATIONS=20                                LoCoMo + LongMemEval iters
+#   SWEBENCH_ITERATIONS=20                       SWE-bench mini iters (independent of ITERATIONS so the same
+#                                                invocation can run 50 iters on memory benchmarks and 30 on swe)
 #
 # Each run is detached with `setsid` so it survives the parent shell.
 set -u -o pipefail
@@ -47,9 +51,27 @@ TS="${TS:-$(date +%Y%m%d_%H%M%S)}"
 ARMS="${ARMS:-baseline,optimal1}"
 TASKS="${TASKS:-locomo,longmemeval}"
 ITERATIONS="${ITERATIONS:-20}"
+SWEBENCH_ITERATIONS="${SWEBENCH_ITERATIONS:-${ITERATIONS}}"
 EVAL_WORKERS="${EVAL_WORKERS:-128}"
 EVAL_MODEL="${EVAL_MODEL:-/data/home/yuhan/model_zoo/Qwen3-8B}"
 EVAL_BASE_URL="${EVAL_BASE_URL:-http://127.0.0.1:8002/v1}"
+
+# SWE-bench mini uses an independent solver stack (DeepSeek v4 Flash via the
+# anthropic-compat endpoint) and the mini-swe-agent runner. EVAL_MODEL /
+# EVAL_BASE_URL above are the Qwen3-8B vLLM judge for LoCoMo + LongMemEval
+# and are NOT used by the SWE-bench arm — that one passes
+# --mini-swe-agent-command / --mini-swe-agent-eval-command instead.
+SWEBENCH_DATA_PATH="${SWEBENCH_DATA_PATH:-data/swebench_verified_full.json}"
+SWEBENCH_LIMIT="${SWEBENCH_LIMIT:-30}"
+SWEBENCH_EVAL_TIMEOUT_S="${SWEBENCH_EVAL_TIMEOUT_S:-900}"
+SWEBENCH_EVAL_WORKERS="${SWEBENCH_EVAL_WORKERS:-10}"
+SWEBENCH_SOLVER_MODEL="${SWEBENCH_SOLVER_MODEL:-openai/deepseek-v4-flash}"
+SWEBENCH_SOLVER_BASE_URL="${SWEBENCH_SOLVER_BASE_URL:-https://api.deepseek.com/v1}"
+SWEBENCH_SOLVER_API_KEY_ENV="${SWEBENCH_SOLVER_API_KEY_ENV:-DEEPSEEK_API_KEY}"
+SWEBENCH_SOLVER_MAX_TOKENS="${SWEBENCH_SOLVER_MAX_TOKENS:-4096}"
+SWEBENCH_MINISWE_RUNNER="${SWEBENCH_MINISWE_RUNNER:-/data/home/yuhan/MemoMemo/scripts/run_miniswe_swebench_single.py}"
+SWEBENCH_MINISWE_RUN_CMD="python ${SWEBENCH_MINISWE_RUNNER} run --source-path {source_path} --instance-path {instance_path} --patch-path {patch_path} --task-dir {task_dir} --model ${SWEBENCH_SOLVER_MODEL} --base-url ${SWEBENCH_SOLVER_BASE_URL} --max-tokens ${SWEBENCH_SOLVER_MAX_TOKENS} --api-key-env ${SWEBENCH_SOLVER_API_KEY_ENV}"
+SWEBENCH_MINISWE_EVAL_CMD="python ${SWEBENCH_MINISWE_RUNNER} eval --source-path {source_path} --instance-path {instance_path} --patch-path {patch_path} --task-dir {task_dir}"
 
 mkdir -p logs runs
 status_file="logs/launch_claude_native_${TS}.status"
@@ -77,15 +99,39 @@ prepare_proposer_home() {
 }
 
 start_one() {
-  local task="$1"      # locomo | longmemeval
+  local task="$1"      # locomo | longmemeval | swebench
   local arm="$2"       # baseline | optimal1
-  local run_id args task_label
+  local run_id args task_label task_iters task_eval_args
+  task_iters="$ITERATIONS"
+  task_eval_args=(
+    --eval-workers "$EVAL_WORKERS"
+    --model "$EVAL_MODEL"
+    --base-url "$EVAL_BASE_URL"
+  )
   if [ "$task" = "locomo" ]; then
     task_label="locomo"
     args=(--locomo)
-  else
+  elif [ "$task" = "longmemeval" ]; then
     task_label="longmemeval_s"
     args=(--longmemeval --longmemeval-variant s)
+  elif [ "$task" = "swebench" ]; then
+    task_label="swebench_miniswe_deepseek_v4_flash"
+    task_iters="$SWEBENCH_ITERATIONS"
+    args=(
+      --swebench
+      --swebench-data-path "$SWEBENCH_DATA_PATH"
+      --limit "$SWEBENCH_LIMIT"
+      --eval-timeout-s "$SWEBENCH_EVAL_TIMEOUT_S"
+      --mini-swe-agent-command "$SWEBENCH_MINISWE_RUN_CMD"
+      --mini-swe-agent-eval-command "$SWEBENCH_MINISWE_EVAL_CMD"
+    )
+    # SWE-bench mini bypasses the LoCoMo/LongMemEval Qwen judge stack;
+    # eval workers are capped low because each task spawns a separate
+    # docker-style mini-swe-agent run via the DeepSeek API.
+    task_eval_args=(--eval-workers "$SWEBENCH_EVAL_WORKERS")
+  else
+    printf '[%s] SKIP unknown_task=%s\n' "$(date -Is)" "$task" >> "$status_file"
+    return 0
   fi
   run_id="${task_label}_claude_native_${arm}_${TS}"
   if [ -d "runs/${run_id}" ]; then
@@ -163,11 +209,9 @@ start_one() {
   setsid nohup python -m optimizer1.cli optimize \
     "${args[@]}" \
     --run-id "$run_id" \
-    --iterations "$ITERATIONS" \
+    --iterations "$task_iters" \
     --split train \
-    --eval-workers "$EVAL_WORKERS" \
-    --model "$EVAL_MODEL" \
-    --base-url "$EVAL_BASE_URL" \
+    "${task_eval_args[@]}" \
     --proposer-agent claude \
     --claude-native-auth \
     "${arm_args[@]}" \
