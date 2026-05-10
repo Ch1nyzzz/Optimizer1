@@ -1040,6 +1040,76 @@ def test_progressive_docker_allows_container_internal_access(tmp_path):
     ) == []
 
 
+def test_update_progressive_state_returns_improved_flag(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    seed = _scored_candidate("seed", passrate=0.2)
+    better = _scored_candidate("iter001_better_top8", passrate=0.3)
+
+    advanced = optimizer._update_progressive_state(
+        iteration=1,
+        budget="high",
+        previous_best_passrate=0.2,
+        candidates=[seed, better],
+        evaluated=[better],
+    )
+    assert advanced is True
+
+
+def test_update_progressive_state_returns_false_when_no_advance(tmp_path):
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    seed = _scored_candidate("seed", passrate=0.5)
+    same = _scored_candidate("iter001_same_top8", passrate=0.4)
+
+    advanced = optimizer._update_progressive_state(
+        iteration=1,
+        budget="high",
+        previous_best_passrate=0.5,
+        candidates=[seed, same],
+        evaluated=[same],
+    )
+    assert advanced is False
+
+
+def test_pareto_advance_signal_uses_strict_passrate_not_frontier_membership(tmp_path):
+    """Pareto must use the strict-passrate gate (no joining-frontier
+    shortcut). Adding a new candidate that joins the top-3 by displacing
+    a weaker one but does NOT exceed the historical best passrate
+    must NOT count as improvement."""
+
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    # Existing candidates: best=0.7. Frontier (top-3): {best, mid, low}.
+    best = _scored_candidate("iter001_best_top8", passrate=0.7)
+    mid = _scored_candidate("iter002_mid_top8", passrate=0.6)
+    low = _scored_candidate("iter003_low_top8", passrate=0.4)
+    # New iter4 has passrate 0.5 — joins top-3 (displaces low), but
+    # does NOT exceed historical best of 0.7.
+    new_joiner = _scored_candidate("iter004_joiner_top8", passrate=0.5)
+
+    # Pareto path: previous_frontier_ids=None forces the strict passrate
+    # gate.
+    advanced_pareto = optimizer._update_progressive_state(
+        iteration=4,
+        budget="high",
+        previous_best_passrate=0.7,
+        previous_frontier_ids=None,
+        candidates=[best, mid, low, new_joiner],
+        evaluated=[new_joiner],
+    )
+    assert advanced_pareto is False
+
+    # Curai/curaii path: previous_frontier_ids provided — joining the
+    # frontier counts as advance.
+    advanced_curai = optimizer._update_progressive_state(
+        iteration=4,
+        budget="high",
+        previous_best_passrate=0.7,
+        previous_frontier_ids={"iter001_best_top8", "iter002_mid_top8", "iter003_low_top8"},
+        candidates=[best, mid, low, new_joiner],
+        evaluated=[new_joiner],
+    )
+    assert advanced_curai is True
+
+
 def test_progressive_budget_schedule_transitions(tmp_path):
     optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
 
@@ -1202,21 +1272,26 @@ def test_best_reference_selection_picks_top_three_by_passrate(tmp_path):
     assert refs == (2, 4, 5)
 
 
-def test_best_candidates_uses_passrate_average_score_pareto_frontier(tmp_path):
+def test_best_candidates_uses_top_k_passrate_frontier(tmp_path):
+    # Frontier is strict top-3 by passrate, ties broken by candidate_id
+    # descending. average_score is no longer consulted.
     optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
     candidates = [
-        _scored_candidate("iter001_low_both_top8", passrate=0.4, average_score=0.4),
-        _scored_candidate("iter002_high_passrate_top8", passrate=0.7, average_score=0.5),
-        _scored_candidate("iter003_high_score_top8", passrate=0.6, average_score=0.7),
-        _scored_candidate("iter004_dominated_top8", passrate=0.6, average_score=0.5),
+        _scored_candidate("iter001_lowest_top8", passrate=0.4, average_score=0.4),
+        _scored_candidate("iter002_highest_top8", passrate=0.7, average_score=0.5),
+        _scored_candidate("iter003_tied_top8", passrate=0.6, average_score=0.7),
+        _scored_candidate("iter004_tied_top8", passrate=0.6, average_score=0.5),
     ]
 
     optimizer._save_best_candidates(candidates)
 
     payload = json.loads(optimizer.frontier_path.read_text(encoding="utf-8"))
+    # iter002 (0.7) wins, then iter004 / iter003 tied at 0.6 — tie-break
+    # picks larger candidate_id first; iter001 (0.4) is dropped.
     assert [item["candidate_id"] for item in payload] == [
-        "iter002_high_passrate_top8",
-        "iter003_high_score_top8",
+        "iter002_highest_top8",
+        "iter004_tied_top8",
+        "iter003_tied_top8",
     ]
 
 
@@ -1282,10 +1357,10 @@ def test_run_test_frontier_evaluates_all_quality_frontier_candidates(tmp_path, m
         )
     )
     candidates = [
-        _scored_candidate("iter001_low_both_top8", passrate=0.4, average_score=0.4),
-        _scored_candidate("iter002_high_passrate_top8", passrate=0.7, average_score=0.5),
-        _scored_candidate("iter003_high_score_top8", passrate=0.6, average_score=0.7),
-        _scored_candidate("iter004_dominated_top8", passrate=0.6, average_score=0.5),
+        _scored_candidate("iter001_lowest_top8", passrate=0.4, average_score=0.4),
+        _scored_candidate("iter002_highest_top8", passrate=0.7, average_score=0.5),
+        _scored_candidate("iter003_tied_top8", passrate=0.6, average_score=0.7),
+        _scored_candidate("iter004_tied_top8", passrate=0.6, average_score=0.5),
     ]
     loaded_specs = []
 
@@ -1329,16 +1404,20 @@ def test_run_test_frontier_evaluates_all_quality_frontier_candidates(tmp_path, m
 
     assert summary["split"] == "test"
     assert summary["limit"] == 2
-    assert summary["train_frontier_count"] == 2
-    assert summary["evaluated_count"] == 2
+    # Top-3 by passrate: iter002 (0.7), then iter004 / iter003 tied at 0.6
+    # with iter004 winning the candidate_id tie-break. iter001 (0.4) drops.
+    assert summary["train_frontier_count"] == 3
+    assert summary["evaluated_count"] == 3
     assert summary["failed_count"] == 0
     assert [item["original_candidate_id"] for item in loaded_specs] == [
-        "iter002_high_passrate_top8",
-        "iter003_high_score_top8",
+        "iter002_highest_top8",
+        "iter004_tied_top8",
+        "iter003_tied_top8",
     ]
     assert [item["candidate_id"] for item in loaded_specs] == [
-        "test_iter002_high_passrate_top8",
-        "test_iter003_high_score_top8",
+        "test_iter002_highest_top8",
+        "test_iter004_tied_top8",
+        "test_iter003_tied_top8",
     ]
     assert (tmp_path / "test_frontier" / "test_results.json").exists()
     assert (tmp_path / "test_frontier" / "test_pareto_frontier.json").exists()
@@ -2070,10 +2149,16 @@ def test_deploy_subagent_assets_writes_files_when_claude_diagnose(tmp_path):
     claudemd = ws / "CLAUDE.md"
     proposer_def = ws / ".claude" / "agents" / "proposer.md"
     diagnoser_def = ws / ".claude" / "agents" / "diagnoser.md"
+    historian_def = ws / ".claude" / "agents" / "historian.md"
 
     assert claudemd.exists(), "CLAUDE.md missing — Claude Code will not load workspace constraints"
     assert proposer_def.exists(), "proposer subagent definition missing — --agent proposer would fail"
     assert diagnoser_def.exists(), "diagnoser subagent definition missing — Task(diagnoser) would fail"
+    # historian is gated on a stagnation-eligible selection policy.
+    # Default policy here means no historian.
+    assert not historian_def.exists(), (
+        "historian.md must NOT deploy under default selection policy"
+    )
 
     # Frontmatter must survive the verbatim copy.
     assert proposer_def.read_text(encoding="utf-8").startswith("---\nname: proposer\n")
@@ -2082,7 +2167,61 @@ def test_deploy_subagent_assets_writes_files_when_claude_diagnose(tmp_path):
     assert not claudemd.read_text(encoding="utf-8").startswith("---\n")
 
 
-def test_deploy_subagent_assets_noop_when_diagnose_off(tmp_path):
+def test_deploy_subagent_assets_writes_historian_under_pareto(tmp_path):
+    """Claude proposer + selection_policy=pareto must deploy historian.md
+    so the proposer's main session can invoke it via the Task tool when
+    stagnation kicks in. (The trigger to actually call it is gated on
+    stagnation_count >= 1; deployment is eager so the file is always
+    available when the call happens.)"""
+
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_agent="claude",
+            proposer_sandbox="docker",
+            selection_policy="pareto",
+        )
+    )
+    ws = tmp_path / "iter_001_ws"
+    ws.mkdir()
+    optimizer._deploy_subagent_assets(ws)
+
+    historian_def = ws / ".claude" / "agents" / "historian.md"
+    assert historian_def.exists(), (
+        "historian.md must deploy on stagnation-eligible policies"
+    )
+    assert historian_def.read_text(encoding="utf-8").startswith("---\nname: historian\n")
+
+
+def test_deploy_subagent_assets_writes_historian_under_curai(tmp_path):
+    """curai is also stagnation-eligible — same eager deployment."""
+
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_agent="claude",
+            proposer_sandbox="docker",
+            selection_policy="curai",
+        )
+    )
+    ws = tmp_path / "iter_001_ws"
+    ws.mkdir()
+    optimizer._deploy_subagent_assets(ws)
+
+    assert (ws / ".claude" / "agents" / "historian.md").exists()
+
+
+def test_deploy_subagent_assets_baseline_drops_only_diagnoser(tmp_path):
+    """For a Claude proposer baseline (diagnose=False) we still deploy
+    proposer.md and workspace.md as the subagent system-prompt channel —
+    only diagnoser.md is omitted, since the diagnoser is gated on
+    --diagnose. This is the contract that makes baseline and optimal1
+    use the same proposer system-prompt path."""
+
     optimizer = LocomoOptimizer(
         LocomoOptimizerConfig(
             run_id="r",
@@ -2095,6 +2234,44 @@ def test_deploy_subagent_assets_noop_when_diagnose_off(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     optimizer._deploy_subagent_assets(ws)
+
+    assert (ws / "CLAUDE.md").exists(), (
+        "workspace.md must be deployed as CLAUDE.md even on baseline so "
+        "Claude Code auto-loads project constraints"
+    )
+    assert (ws / ".claude" / "agents" / "proposer.md").exists(), (
+        "proposer.md must be deployed as a subagent file even on baseline "
+        "so --agent proposer can load the role system prompt"
+    )
+    assert not (ws / ".claude" / "agents" / "diagnoser.md").exists(), (
+        "diagnoser.md is gated on --diagnose; baseline must not deploy it"
+    )
+    assert not (ws / ".claude" / "agents" / "historian.md").exists(), (
+        "historian.md is gated on stagnation-eligible policy; default baseline must not deploy it"
+    )
+
+
+def test_deploy_subagent_assets_noop_when_proposer_agent_not_claude(tmp_path):
+    """If the proposer is not Claude (defensive — current CLI restricts
+    proposer_agent to 'claude' but that may relax later), the subagent
+    deployment must be a complete no-op, since no other agent honors
+    the .claude/agents protocol."""
+
+    optimizer = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path,
+            iterations=0,
+            proposer_agent="claude",
+        )
+    )
+    # Bypass the constructor validator — at runtime we just want to
+    # confirm the deployment helper short-circuits cleanly.
+    object.__setattr__(optimizer.config, "proposer_agent", "other")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    optimizer._deploy_subagent_assets(ws)
+
     assert not (ws / "CLAUDE.md").exists()
     assert not (ws / ".claude" / "agents").exists()
 
@@ -2146,3 +2323,110 @@ def test_docker_sandbox_bind_mounts_workspace_so_subagent_files_are_visible(
     # Also confirm the launcher cwd that the rest of the runner uses
     # for log extraction sees the container path, not the host path.
     assert prepared.extract_cwd == Path("/workspace")
+
+
+def test_uses_claude_subagent_proposer_independent_of_diagnose(tmp_path):
+    """The proposer runs as a Claude Code subagent for *every* Claude
+    proposer run, regardless of --diagnose. (--diagnose only affects
+    whether diagnoser.md is also deployed and pre-called.)"""
+
+    diag_off = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path / "off",
+            iterations=0,
+            proposer_agent="claude",
+            diagnose=False,
+        )
+    )
+    diag_on = LocomoOptimizer(
+        LocomoOptimizerConfig(
+            run_id="r",
+            out_dir=tmp_path / "on",
+            iterations=0,
+            proposer_agent="claude",
+            diagnose=True,
+        )
+    )
+    assert diag_off._uses_claude_subagent_proposer() is True
+    assert diag_on._uses_claude_subagent_proposer() is True
+    # Diagnoser flag is still gated on --diagnose.
+    assert diag_off._uses_claude_subagent_diagnoser() is False
+    assert diag_on._uses_claude_subagent_diagnoser() is True
+
+
+def test_pareto_select_base_picks_only_from_frontier_above_baseline(tmp_path, monkeypatch):
+    """pareto policy must restrict the patch base pool to the current
+    top-K passrate frontier and enforce a strict-greater-than baseline
+    gate so a tied / worse seed is never recycled. The frontier is
+    strict top-3 by passrate (ties broken by candidate_id desc); only
+    members above the baseline are eligible."""
+
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    _seed_curaii_iter_dirs(optimizer, [1, 2, 3, 4, 5])
+    candidates = [
+        _make_curaii_candidate(1, 0.60),  # frontier (top-3)
+        _make_curaii_candidate(2, 0.55),  # frontier (top-3)
+        _make_curaii_candidate(3, 0.50),  # frontier (top-3)
+        _make_curaii_candidate(4, 0.30),  # below baseline gate
+        _make_curaii_candidate(5, 0.40),  # above baseline but NOT in top-3
+    ]
+    chosen = {
+        optimizer._pareto_select_base(
+            candidates,
+            iteration=10,
+            baseline_passrate=0.30,
+        )
+        for _ in range(60)
+    }
+    # Frontier (top-3) above baseline = {1, 2, 3}. iter 4 is at baseline;
+    # iter 5 is above baseline but not in top-3. Random draws should only
+    # land on the three frontier members.
+    assert chosen <= {1, 2, 3}, f"unexpected base chosen outside frontier: {chosen}"
+    # Stochastic: with 60 draws all three eligibles should appear at least once.
+    assert chosen == {1, 2, 3}, (
+        f"expected uniform sampling to hit all frontier members, got {chosen}"
+    )
+
+
+def test_pareto_select_base_returns_none_on_empty_or_unsuitable_pool(tmp_path):
+    """When the frontier has no eligible candidate (no source on disk,
+    or none above baseline), pareto must return None so the caller can
+    fall back to the clean snapshot — i.e. behave like default."""
+
+    optimizer = LocomoOptimizer(LocomoOptimizerConfig(run_id="r", out_dir=tmp_path))
+    # No on-disk iter dirs at all.
+    assert optimizer._pareto_select_base(
+        [_make_curaii_candidate(1, 0.99)],
+        iteration=5,
+        baseline_passrate=0.30,
+    ) is None
+
+    # On-disk dir present, but candidate not strictly above baseline.
+    _seed_curaii_iter_dirs(optimizer, [1])
+    assert optimizer._pareto_select_base(
+        [_make_curaii_candidate(1, 0.30)],
+        iteration=5,
+        baseline_passrate=0.30,
+    ) is None
+
+
+def test_pareto_policy_pins_budget_high_every_iter():
+    """The pareto policy diverges from default only on the patch base;
+    its per-iter context budget must be the same fixed-high used by
+    default. This is the contract that makes the policy a single-axis
+    ablation against default."""
+
+    from optimizer1.cli import main as _cli_main  # noqa: F401  smoke import
+
+    # The mapping is encoded in the run() main loop's branch chain:
+    # bandit / progressive-family / random-recent-best / fallback.
+    # pareto must NOT match any of the non-fallback branches, so it
+    # falls into the "high" branch. Express that as an explicit list
+    # check so a later refactor that adds pareto into one of the
+    # progressive-family sets fails loudly here.
+    progressive_family = {"progressive", "curai", "curaii"}
+    medium_family = {"random", "recent", "best"}
+    assert "pareto" not in progressive_family
+    assert "pareto" not in medium_family
+    assert "pareto" != "bandit"

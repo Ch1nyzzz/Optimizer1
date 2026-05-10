@@ -48,8 +48,9 @@ runtime behavior.
 When the iteration-specific section instructs you to call the
 `diagnoser` subagent first, invoke it via the Task tool *before any
 other investigation*. The diagnoser will explore traces and source,
-then write `diagnoser_report.json` at the workspace root. Read that
-file as hypothesis input; you may reject any direction it proposes,
-but record your reasoning in the candidate's `hypothesis` field if
-you do. If the diagnoser report and the raw traces contradict each
-other, follow the traces and explain the discrepancy.
+then write `diagnoser_report.md` at the workspace root. Read that
+file as hypothesis input. The diagnoser reports failure modes with
+evidence — it does NOT propose fix directions; choosing the mechanism
+is your job. If the diagnoser report and the raw traces contradict
+each other, follow the traces and explain the discrepancy in the
+candidate's `hypothesis` field.

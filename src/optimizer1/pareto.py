@@ -1,4 +1,15 @@
-"""Pareto frontier over passrate and average score."""
+"""Top-K passrate frontier.
+
+The frontier is the set of candidates the proposer's ``pareto`` selection
+policy may resample its patch base from. It is a strict top-K by
+passrate, with ties at the K-th position broken by ``candidate_id``
+(string comparison, descending — later iter ids win).
+
+Single-objective by design: only ``passrate`` matters. Other ParetoPoint
+fields (``average_score``, ``token_consuming``) remain on the dataclass
+for downstream consumers that display them, but they do not influence
+selection.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +19,13 @@ from pathlib import Path
 from typing import Iterable
 
 
+FRONTIER_TOP_K = 3
+
+
 @dataclass(frozen=True)
 class ParetoPoint:
-    """One point in the memory-evolution Pareto plane."""
+    """One point in the frontier. Only ``passrate`` and ``candidate_id``
+    drive selection; the rest is metadata for display."""
 
     candidate_id: str
     scaffold_name: str
@@ -23,60 +38,39 @@ class ParetoPoint:
 
 
 def dominates(a: ParetoPoint, b: ParetoPoint, *, quality_gap_threshold: float = 0.0) -> bool:
-    """Return True if `a` dominates `b`.
+    """Strict passrate dominance: ``a`` dominates ``b`` iff ``a.passrate > b.passrate``.
 
-    Higher passrate is better. Higher average_score is better. Token use is a
-    tie-breaker when quality is identical.
-
-    `quality_gap_threshold` is retained for API compatibility. When positive,
-    a point with a passrate advantage larger than that threshold dominates only
-    if it is not worse on average_score.
+    ``quality_gap_threshold`` is retained for API compatibility with
+    older callers; it is no longer consulted.
     """
 
-    if (
-        quality_gap_threshold > 0
-        and (a.passrate - b.passrate) > quality_gap_threshold
-        and a.average_score >= b.average_score
-    ):
-        return True
-
-    passrate_ge = a.passrate >= b.passrate
-    score_ge = a.average_score >= b.average_score
-    strict_quality = a.passrate > b.passrate or a.average_score > b.average_score
-    equal_quality_cheaper = (
-        a.passrate == b.passrate
-        and a.average_score == b.average_score
-        and a.token_consuming < b.token_consuming
-    )
-    return passrate_ge and score_ge and (strict_quality or equal_quality_cheaper)
+    del quality_gap_threshold  # deadcode for API compat
+    return a.passrate > b.passrate
 
 
 def pareto_frontier(
     points: Iterable[ParetoPoint],
     *,
     quality_gap_threshold: float = 0.0,
+    top_k: int = FRONTIER_TOP_K,
 ) -> list[ParetoPoint]:
-    """Filter a collection of points down to the non-dominated frontier."""
+    """Strict top-K by passrate, ties broken by ``candidate_id`` desc.
 
+    Returns ``min(top_k, len(points))`` points: ``[]`` when ``points`` is
+    empty, the whole pool when ``len(points) < top_k``.
+
+    ``quality_gap_threshold`` is retained for API compatibility; it is
+    no longer consulted.
+    """
+
+    del quality_gap_threshold  # deadcode for API compat
     pool = list(points)
-    frontier: list[ParetoPoint] = []
-    for point in pool:
-        if any(
-            other is not point
-            and dominates(other, point, quality_gap_threshold=quality_gap_threshold)
-            for other in pool
-        ):
-            continue
-        frontier.append(point)
-    frontier.sort(
-        key=lambda item: (
-            -item.passrate,
-            -item.average_score,
-            item.token_consuming,
-            item.candidate_id,
-        )
-    )
-    return frontier
+    if not pool:
+        return []
+    # Two-pass stable sort: secondary key first, primary key last.
+    pool.sort(key=lambda item: item.candidate_id, reverse=True)
+    pool.sort(key=lambda item: item.passrate, reverse=True)
+    return pool[: max(0, int(top_k))]
 
 
 def save_frontier(

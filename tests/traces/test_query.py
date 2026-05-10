@@ -108,6 +108,12 @@ def _seed_db(tmp_path: Path) -> Path:
             "src/optimizer1/locomo.py",
         ],
     )
+    iter2_dir = tmp_path / "proposer_calls" / "iter_002"
+    iter2_dir.mkdir(parents=True)
+    (iter2_dir / "diff.patch").write_text(
+        "diff --git a/src/optimizer1/locomo.py b/src/optimizer1/locomo.py\n",
+        encoding="utf-8",
+    )
     return db_path
 
 
@@ -130,78 +136,6 @@ def test_task_history_returns_iter_ordered_rows(tmp_path):
 def test_task_history_unknown_task_returns_empty(tmp_path):
     db_path = _seed_db(tmp_path)
     assert TraceQuery(db_path).task_history("never_seen") == []
-
-
-# ---- persistent_failures ------------------------------------------
-
-
-def test_persistent_failures_counts_trailing_streak(tmp_path):
-    db_path = _seed_db(tmp_path)
-    # Add an extra iter so task_a has a 2-long persistent_fail streak.
-    indexer = Indexer(db_path)
-    with indexer._connect() as conn:
-        conn.execute(
-            "INSERT INTO traces "
-            "(trace_id, iteration, candidate_id, task_id, benchmark, passed, score, jsonl_path, jsonl_lineno) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "t-4-a",
-                4,
-                "cand_x",
-                "task_a",
-                "longmemeval",
-                0,
-                0.0,
-                str(tmp_path / "fake.jsonl"),
-                1,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO diffs (trace_id, baseline_trace, status, baseline_score, delta) "
-            "VALUES (?, ?, ?, ?, ?)",
-            ("t-4-a", None, STATUS_PERSISTENT_FAIL, None, None),
-        )
-
-    failures = TraceQuery(db_path).persistent_failures(min_streak=2)
-
-    assert any(f["task_id"] == "task_a" and f["current_streak"] == 2 for f in failures)
-    # task_b never enters persistent_fail (its iter 2 row is regressed).
-    assert not any(f["task_id"] == "task_b" for f in failures)
-
-
-def test_persistent_failures_min_streak_filters_short_runs(tmp_path):
-    db_path = _seed_db(tmp_path)
-    failures = TraceQuery(db_path).persistent_failures(min_streak=2)
-    # Only task_a's 1-long streak exists in seed; raise threshold and we
-    # should get nothing.
-    assert TraceQuery(db_path).persistent_failures(min_streak=5) == []
-
-
-# ---- breakthroughs --------------------------------------------------
-
-
-def test_breakthroughs_filters_by_iter_lower_bound(tmp_path):
-    db_path = _seed_db(tmp_path)
-    rows = TraceQuery(db_path).breakthroughs(since_iter=0)
-    assert len(rows) == 1
-    assert rows[0]["task_id"] == "task_c"
-    assert rows[0]["iteration"] == 3
-    assert TraceQuery(db_path).breakthroughs(since_iter=4) == []
-
-
-# ---- regressions ----------------------------------------------------
-
-
-def test_regressions_only_within_window(tmp_path):
-    db_path = _seed_db(tmp_path)
-    # max iter is 3, window=2 covers iter ∈ {2, 3}.
-    rows = TraceQuery(db_path).regressions(window=2)
-    iters = sorted({r["iteration"] for r in rows})
-    assert iters == [2]  # iter 1 row excluded; iter 3 has no regressions
-    # window=3 covers iter ∈ {1, 2, 3} so iter 1's regression is included
-    rows = TraceQuery(db_path).regressions(window=3)
-    iters = sorted({r["iteration"] for r in rows})
-    assert iters == [1, 2]
 
 
 # ---- file_history ---------------------------------------------------
@@ -234,11 +168,36 @@ def test_candidate_outcome_summarizes_iter_candidate(tmp_path):
     assert out["n_traces"] == 2
     assert out["passrate"] == 0.0
     assert out["status_counts"]["regressed"] == 2
+    assert out["diff_path"].endswith("proposer_calls/iter_002/diff.patch")
     # iter 2 modified two files
     assert sorted(out["modified_paths"]) == [
         "src/optimizer1/locomo.py",
         "src/optimizer1/scaffolds/memgpt_scaffold.py",
     ]
+    assert [item["task_id"] for item in out["regressed_tasks"]] == [
+        "task_a",
+        "task_b",
+    ]
+    assert [item["task_id"] for item in out["failed_tasks"]] == [
+        "task_a",
+        "task_b",
+    ]
+    assert out["regressed_tasks"][0]["jsonl_path"].endswith("fake.jsonl")
+    assert out["regressed_tasks"][0]["delta"] == -1.0
+
+
+def test_candidate_outcome_returns_breakthrough_examples(tmp_path):
+    db_path = _seed_db(tmp_path)
+    out = TraceQuery(db_path).candidate_outcome(3, "cand_x")
+    assert [item["task_id"] for item in out["breakthrough_tasks"]] == ["task_c"]
+    assert [item["task_id"] for item in out["failed_tasks"]] == ["task_a"]
+
+
+def test_candidate_outcome_caps_examples(tmp_path):
+    db_path = _seed_db(tmp_path)
+    out = TraceQuery(db_path).candidate_outcome(2, "cand_x", max_examples=1)
+    assert [item["task_id"] for item in out["regressed_tasks"]] == ["task_a"]
+    assert [item["task_id"] for item in out["failed_tasks"]] == ["task_a"]
 
 
 def test_candidate_outcome_missing_returns_zero(tmp_path):
@@ -246,7 +205,197 @@ def test_candidate_outcome_missing_returns_zero(tmp_path):
     out = TraceQuery(db_path).candidate_outcome(99, "cand_x")
     assert out["n_traces"] == 0
     assert out["passrate"] is None
+    assert out["diff_path"] is None
     assert out["modified_paths"] == []
+    assert out["regressed_tasks"] == []
+    assert out["breakthrough_tasks"] == []
+    assert out["failed_tasks"] == []
+
+
+# ---- list_tasks ----------------------------------------------------
+
+
+def test_list_tasks_returns_distinct_ids_across_iters(tmp_path):
+    db_path = _seed_db(tmp_path)
+    tasks = TraceQuery(db_path).list_tasks()
+    # task_a / task_b appear in iters 0-2; task_c only in iter 3.
+    assert tasks == ["task_a", "task_b", "task_c"]
+
+
+def test_list_tasks_scoped_to_one_iteration(tmp_path):
+    db_path = _seed_db(tmp_path)
+    assert TraceQuery(db_path).list_tasks(iteration=0) == ["task_a", "task_b"]
+    assert TraceQuery(db_path).list_tasks(iteration=3) == ["task_a", "task_c"]
+
+
+def test_list_tasks_unknown_iter_returns_empty(tmp_path):
+    db_path = _seed_db(tmp_path)
+    assert TraceQuery(db_path).list_tasks(iteration=99) == []
+
+
+# ---- iteration_metadata --------------------------------------------
+
+
+def test_iteration_metadata_returns_full_rows(tmp_path):
+    db_path = _seed_db(tmp_path)
+    Indexer(db_path).upsert_iteration_meta(
+        iteration=2,
+        patch_base=1,
+        budget="high",
+        selection_policy="pareto",
+        advanced_frontier=False,
+        on_pareto_frontier=True,
+        passrate=0.5,
+        mean_score=0.4,
+        proposer_call_dir="/runs/r/proposer_calls/iter_002",
+    )
+    rows = TraceQuery(db_path).iteration_metadata()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["iteration"] == 2
+    assert row["patch_base"] == 1
+    assert row["budget"] == "high"
+    assert row["selection_policy"] == "pareto"
+    assert row["advanced_frontier"] is False
+    assert row["on_pareto_frontier"] is True
+    assert row["passrate"] == 0.5
+    assert row["mean_score"] == 0.4
+    assert row["proposer_call_dir"].endswith("iter_002")
+
+
+def test_iteration_metadata_filters_by_iters_list(tmp_path):
+    db_path = _seed_db(tmp_path)
+    indexer = Indexer(db_path)
+    indexer.upsert_iteration_meta(iteration=1, passrate=0.3)
+    indexer.upsert_iteration_meta(iteration=2, passrate=0.5)
+    indexer.upsert_iteration_meta(iteration=3, passrate=0.7)
+
+    rows = TraceQuery(db_path).iteration_metadata(iters=[1, 3])
+    assert [r["iteration"] for r in rows] == [1, 3]
+
+
+def test_iteration_metadata_empty_filter_returns_empty(tmp_path):
+    db_path = _seed_db(tmp_path)
+    assert TraceQuery(db_path).iteration_metadata(iters=[]) == []
+
+
+# ---- compare_iterations --------------------------------------------
+
+
+def test_compare_iterations_classifies_each_pair(tmp_path):
+    db_path = _seed_db(tmp_path)
+    rows = TraceQuery(db_path).compare_iterations(left=0, right=1)
+    by_task = {row["task_id"]: row for row in rows}
+
+    # task_a: passed in both iters → stable_pass
+    assert by_task["task_a"]["classification"] == "stable_pass"
+    # task_b: passed at baseline (iter 0), failed in iter 1 → regressed
+    assert by_task["task_b"]["classification"] == "regressed_RvL"
+    assert by_task["task_b"]["delta"] == -1.0
+    assert by_task["task_b"]["left"]["passed"] is True
+    assert by_task["task_b"]["right"]["passed"] is False
+
+
+def test_compare_iterations_handles_only_in_left_or_right(tmp_path):
+    db_path = _seed_db(tmp_path)
+    # iter 0 has {task_a, task_b}; iter 3 has {task_a, task_c}
+    rows = TraceQuery(db_path).compare_iterations(left=0, right=3)
+    by_task = {row["task_id"]: row for row in rows}
+
+    assert by_task["task_b"]["classification"] == "only_in_left"
+    assert by_task["task_b"]["delta"] is None
+    assert by_task["task_b"]["right"] is None
+
+    assert by_task["task_c"]["classification"] == "only_in_right"
+    assert by_task["task_c"]["delta"] is None
+    assert by_task["task_c"]["left"] is None
+
+
+def test_compare_iterations_orders_regressions_first(tmp_path):
+    db_path = _seed_db(tmp_path)
+    # iter 0 vs iter 2 — both task_a and task_b regressed.
+    rows = TraceQuery(db_path).compare_iterations(left=0, right=2)
+    classifications = [r["classification"] for r in rows]
+    # All regressed_RvL come before any other class.
+    seen_other = False
+    for c in classifications:
+        if c != "regressed_RvL":
+            seen_other = True
+        elif seen_other:
+            raise AssertionError(
+                f"regressed_RvL after non-regressed: {classifications}"
+            )
+
+
+def test_compare_iterations_picks_headline_candidate_by_default(tmp_path):
+    """When no candidate_id passed, the highest-passrate candidate is
+    used. With ties, candidate_id desc wins (matches frontier rule)."""
+
+    db_path = tmp_path / "traces" / "index.db"
+    indexer = Indexer(db_path)
+    with indexer._connect() as conn:
+        # Iter 5 has two candidates: cand_a all-fail, cand_b all-pass.
+        # Headline should be cand_b.
+        for cid, passed in [("cand_a", 0), ("cand_b", 1)]:
+            for task, score in [("t1", 1.0), ("t2", 1.0)]:
+                conn.execute(
+                    "INSERT INTO traces (trace_id, iteration, candidate_id, task_id, "
+                    "benchmark, passed, score, jsonl_path, jsonl_lineno) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        f"5-{cid}-{task}",
+                        5,
+                        cid,
+                        task,
+                        "longmemeval",
+                        passed,
+                        score if passed else 0.0,
+                        str(tmp_path / "fake.jsonl"),
+                        1,
+                    ),
+                )
+        # Iter 6 has only cand_b, all-fail.
+        for task in ("t1", "t2"):
+            conn.execute(
+                "INSERT INTO traces (trace_id, iteration, candidate_id, task_id, "
+                "benchmark, passed, score, jsonl_path, jsonl_lineno) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"6-cand_b-{task}",
+                    6,
+                    "cand_b",
+                    task,
+                    "longmemeval",
+                    0,
+                    0.0,
+                    str(tmp_path / "fake.jsonl"),
+                    1,
+                ),
+            )
+
+    rows = TraceQuery(db_path).compare_iterations(left=5, right=6)
+    by_task = {row["task_id"]: row for row in rows}
+    assert by_task["t1"]["left"]["candidate_id"] == "cand_b"
+    assert by_task["t1"]["classification"] == "regressed_RvL"
+
+
+def test_compare_iterations_explicit_candidate_ids(tmp_path):
+    db_path = _seed_db(tmp_path)
+    # Force the comparison to use 'baseline' on left and 'cand_x' on right.
+    rows = TraceQuery(db_path).compare_iterations(
+        left=0,
+        right=1,
+        left_candidate_id="baseline",
+        right_candidate_id="cand_x",
+    )
+    by_task = {row["task_id"]: row for row in rows}
+    assert by_task["task_a"]["left"]["candidate_id"] == "baseline"
+    assert by_task["task_a"]["right"]["candidate_id"] == "cand_x"
+
+
+def test_compare_iterations_missing_iter_returns_empty(tmp_path):
+    db_path = _seed_db(tmp_path)
+    assert TraceQuery(db_path).compare_iterations(left=99, right=100) == []
 
 
 # ---- TraceQuery.__init__ -------------------------------------------
@@ -255,6 +404,5 @@ def test_candidate_outcome_missing_returns_zero(tmp_path):
 def test_traces_query_missing_db_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         TraceQuery(tmp_path / "nope.db")
-
 
 

@@ -28,7 +28,6 @@ from optimizer1.schemas import CandidateResult
 
 from .adapter import get_adapter
 from .baseline import Baseline
-from .embeddings import DiffEmbedder
 from .indexer import Indexer
 from .recorder import Recorder
 from .renderer import RenderConfig, Renderer
@@ -45,7 +44,6 @@ class TraceHarness:
         benchmark: str,
         baseline_path: Path | None = None,
         render_config: RenderConfig | None = None,
-        diff_embedder: DiffEmbedder | None = None,
     ) -> None:
         self.run_dir = Path(run_dir)
         self.root = self.run_dir / "traces"
@@ -65,7 +63,6 @@ class TraceHarness:
             baseline=self.baseline,
         )
         self.renderer = Renderer(self.root, config=render_config)
-        self.diff_embedder = diff_embedder
         self._manifest_written = False
         # When no external baseline is provided, iter_0 of *this* run
         # acts as the implicit baseline. We lazy-load it the first time
@@ -104,8 +101,18 @@ class TraceHarness:
         *,
         iteration: int,
         candidates: list[CandidateResult],
+        patch_base: int | None = None,
+        budget: str | None = None,
+        selection_policy: str | None = None,
+        proposer_call_dir: str | None = None,
     ) -> list[Path]:
         """Build traces for every candidate and write them to disk.
+
+        ``patch_base`` / ``budget`` / ``selection_policy`` /
+        ``proposer_call_dir`` are policy-level metadata passed through
+        to ``iteration_meta``. ``passrate`` and ``mean_score`` for the
+        iter are derived from ``candidates`` (representative = the
+        candidate with the highest passrate).
 
         Returns the list of jsonl paths written (one per candidate).
         """
@@ -158,16 +165,24 @@ class TraceHarness:
                 iteration=iteration,
                 paths=_paths_from_diff_text(diff_text),
             )
-            if self.diff_embedder is not None and diff_text:
-                emb = self.diff_embedder.embed(diff_text)
-                if emb is not None:
-                    self.indexer.record_diff_embedding(
-                        iteration=iteration,
-                        model=emb.model,
-                        dim=emb.dim,
-                        diff_text=emb.diff_text,
-                        embedding=emb.to_bytes(),
-                    )
+            # Always persist the raw diff so the MCP ``trace_similar``
+            # tool can lazily embed it on demand. Embedding model
+            # selection lives entirely in the MCP layer; the optimizer
+            # has no embedding configuration to thread through.
+            self.indexer.record_diff_text(
+                iteration=iteration,
+                diff_text=diff_text,
+            )
+            iter_passrate, iter_mean_score = _representative_scores(candidates)
+            self.indexer.upsert_iteration_meta(
+                iteration=iteration,
+                patch_base=patch_base,
+                budget=budget,
+                selection_policy=selection_policy,
+                passrate=iter_passrate,
+                mean_score=iter_mean_score,
+                proposer_call_dir=proposer_call_dir,
+            )
             self.renderer.render_iteration(iteration)
         return written
 
@@ -205,6 +220,22 @@ class TraceHarness:
             return json.loads(Path(candidate.result_path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
+
+
+def _representative_scores(
+    candidates: list[CandidateResult],
+) -> tuple[float | None, float | None]:
+    """Pick the (passrate, mean_score) of the headline candidate for
+    one iteration. Headline = highest passrate, tie-break by
+    candidate_id desc (matches the frontier rule)."""
+
+    if not candidates:
+        return (None, None)
+    chosen = max(
+        candidates,
+        key=lambda item: (float(item.passrate or 0.0), item.candidate_id),
+    )
+    return (float(chosen.passrate or 0.0), float(chosen.average_score or 0.0))
 
 
 def _paths_from_diff_text(diff_text: str) -> list[str]:

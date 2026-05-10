@@ -70,19 +70,16 @@ def _seed_db(tmp_path: Path) -> Path:
         )
     indexer.record_file_modifications(iteration=1, paths=["src/a.py"])
     indexer.record_file_modifications(iteration=2, paths=["src/a.py", "src/b.py"])
-    indexer.record_diff_embedding(
+    # Seed raw diff text for trace_similar to embed lazily. No
+    # diff_embeddings rows: tests stub the DiffEmbedder so the lazy
+    # path computes deterministic vectors on demand.
+    indexer.record_diff_text(
         iteration=1,
-        model="stub-model",
-        dim=3,
         diff_text="diff --git a/src/a.py b/src/a.py\n+ change",
-        embedding=pack_vector((1.0, 0.0, 0.0)),
     )
-    indexer.record_diff_embedding(
+    indexer.record_diff_text(
         iteration=2,
-        model="stub-model",
-        dim=3,
         diff_text="diff --git a/src/a.py b/src/a.py\n+ tweak",
-        embedding=pack_vector((0.0, 1.0, 0.0)),
     )
     return db_path
 
@@ -111,26 +108,6 @@ def test_tool_task_history(tmp_path):
     assert "rationale_diagnosis" not in rows[1]
 
 
-def test_tool_persistent_failures(tmp_path):
-    srv = _import_server(_seed_db(tmp_path))
-    rows = srv.trace_persistent_failures(min_streak=1)
-    assert any(r["task_id"] == "task_a" for r in rows)
-
-
-def test_tool_breakthroughs(tmp_path):
-    srv = _import_server(_seed_db(tmp_path))
-    rows = srv.trace_breakthroughs(since_iter=0)
-    assert len(rows) == 1 and rows[0]["task_id"] == "task_b"
-    # Rationale layer removed.
-    assert "rationale_hypothesis" not in rows[0]
-
-
-def test_tool_regressions(tmp_path):
-    srv = _import_server(_seed_db(tmp_path))
-    rows = srv.trace_regressions(window=2)
-    assert any(r["iteration"] == 2 for r in rows)
-
-
 def test_tool_file_history(tmp_path):
     srv = _import_server(_seed_db(tmp_path))
     rows = srv.trace_file_history("src/a.py")
@@ -139,41 +116,154 @@ def test_tool_file_history(tmp_path):
 
 def test_tool_candidate_outcome(tmp_path):
     srv = _import_server(_seed_db(tmp_path))
-    out = srv.trace_candidate_outcome(1, "cand_x")
+    out = srv.trace_candidate_outcome(1, "cand_x", max_examples=1)
     assert out["n_traces"] == 2
+    assert [item["task_id"] for item in out["breakthrough_tasks"]] == ["task_b"]
+    assert out["failed_tasks"] == []
     # Rationale layer removed.
     assert "rationale" not in out
 
 
-def test_tool_similar_finds_top_k(tmp_path, monkeypatch):
-    """Stub the embedder so trace_similar returns deterministic similarity."""
+class _StubEmbedder:
+    """Deterministic embedder for lazy-embed tests.
+
+    Maps textual cues to fixed unit vectors so cosine sim is exact.
+    Counts calls so tests can assert cache behavior.
+    """
+
+    DEFAULT_MODEL = "stub-model"
+    calls: int = 0
+
+    def __init__(self, *args, **kwargs):
+        self.model = kwargs.get("model") or self.DEFAULT_MODEL
+
+    def embed(self, text):
+        type(self).calls += 1
+        if "tweak" in text or "match-iter2" in text:
+            vec = (0.0, 1.0, 0.0)
+        elif "change" in text or "match-iter1" in text:
+            vec = (1.0, 0.0, 0.0)
+        else:
+            vec = (0.0, 0.0, 1.0)
+        return DiffEmbedding(
+            model=self.model, dim=3, diff_text=text, vector=vec
+        )
+
+
+def test_tool_similar_finds_top_k_via_lazy_embed(tmp_path, monkeypatch):
+    """trace_similar lazily embeds the seeded diff_text rows on first
+    call, then ranks by cosine similarity to the query embedding."""
 
     db_path = _seed_db(tmp_path)
     srv = _import_server(db_path)
 
-    class _StubEmbedder:
-        def __init__(self, *args, **kwargs):
-            self.model = kwargs.get("model") or "stub-model"
-
-        def embed(self, text):
-            # exact match for stored vector(1, 0, 0) at iter 1
-            if "iter1" in text or "match-iter1" in text:
-                vec = (1.0, 0.0, 0.0)
-            else:
-                vec = (0.0, 1.0, 0.0)
-            return DiffEmbedding(
-                model=self.model, dim=3, diff_text=text, vector=vec
-            )
-
+    _StubEmbedder.calls = 0
     monkeypatch.setattr(srv, "DiffEmbedder", _StubEmbedder)
+
     rows = srv.trace_similar("match-iter1 please", k=2)
     assert rows[0]["iteration"] == 1
     assert rows[0]["similarity"] > 0.99
+    assert rows[0]["model"] == "stub-model"
     assert rows[0]["status_counts"]
-    # Rationale layer removed.
-    assert "rationale_hypothesis" not in rows[0]
+    # 2 iters embedded lazily + 1 query embed = 3 calls on first run.
+    assert _StubEmbedder.calls == 3
+
+
+def test_tool_similar_caches_embeddings_after_first_call(tmp_path, monkeypatch):
+    """Second call to trace_similar should reuse the cached embeddings;
+    only the query is re-embedded."""
+
+    db_path = _seed_db(tmp_path)
+    srv = _import_server(db_path)
+    monkeypatch.setattr(srv, "DiffEmbedder", _StubEmbedder)
+
+    _StubEmbedder.calls = 0
+    srv.trace_similar("match-iter1", k=2)
+    first_calls = _StubEmbedder.calls
+
+    _StubEmbedder.calls = 0
+    srv.trace_similar("match-iter2", k=2)
+    second_calls = _StubEmbedder.calls
+
+    # First run: 2 iter embeds + 1 query embed = 3.
+    assert first_calls == 3
+    # Second run: cache hit on both iters, only the query is embedded.
+    assert second_calls == 1
+
+
+def test_tool_similar_re_embeds_when_model_switches(tmp_path, monkeypatch):
+    """A different DIFF_EMBEDDING_MODEL forces a fresh cache row per
+    iter, then ranks against the new model's vectors."""
+
+    import sqlite3
+
+    db_path = _seed_db(tmp_path)
+    srv = _import_server(db_path)
+    monkeypatch.setattr(srv, "DiffEmbedder", _StubEmbedder)
+
+    # First run with default model populates one cache row per iter.
+    srv.trace_similar("match-iter1", k=2)
+
+    # Switch model — env override drives lazy-embed to write fresh rows.
+    os.environ["DIFF_EMBEDDING_MODEL"] = "alt-model"
+    try:
+        _StubEmbedder.DEFAULT_MODEL = "alt-model"
+        _StubEmbedder.calls = 0
+        rows = srv.trace_similar("match-iter1", k=2)
+    finally:
+        del os.environ["DIFF_EMBEDDING_MODEL"]
+        _StubEmbedder.DEFAULT_MODEL = "stub-model"
+
+    assert rows[0]["model"] == "alt-model"
+    # Both iters must be re-embedded under the new model + the query = 3.
+    assert _StubEmbedder.calls == 3
+    # Both models' rows coexist in the cache — switching back stays cheap.
+    with sqlite3.connect(db_path) as conn:
+        models = {
+            row[0]
+            for row in conn.execute("SELECT DISTINCT model FROM diff_embeddings")
+        }
+    assert models == {"stub-model", "alt-model"}
 
 
 def test_tool_similar_empty_returns_empty(tmp_path):
     srv = _import_server(_seed_db(tmp_path))
     assert srv.trace_similar("   ", k=5) == []
+
+
+def test_tool_list_tasks_full_set(tmp_path):
+    # Seed has task_a in iters 0-3 and task_b only at iter 1.
+    srv = _import_server(_seed_db(tmp_path))
+    tasks = srv.trace_list_tasks()
+    assert tasks == ["task_a", "task_b"]
+
+
+def test_tool_list_tasks_scoped(tmp_path):
+    srv = _import_server(_seed_db(tmp_path))
+    assert srv.trace_list_tasks(iteration=0) == ["task_a"]
+    assert srv.trace_list_tasks(iteration=1) == ["task_a", "task_b"]
+
+
+def test_tool_iteration_metadata(tmp_path):
+    db_path = _seed_db(tmp_path)
+    Indexer(db_path).upsert_iteration_meta(
+        iteration=2,
+        patch_base=1,
+        budget="high",
+        selection_policy="pareto",
+        passrate=0.5,
+    )
+    srv = _import_server(db_path)
+    rows = srv.trace_iteration_metadata()
+    assert len(rows) == 1
+    assert rows[0]["iteration"] == 2
+    assert rows[0]["selection_policy"] == "pareto"
+
+
+def test_tool_compare_iterations(tmp_path):
+    # iter 0 has task_a (pass); iter 1 has task_a (pass) + task_b (pass).
+    srv = _import_server(_seed_db(tmp_path))
+    rows = srv.trace_compare_iterations(left=0, right=1)
+    by_task = {r["task_id"]: r["classification"] for r in rows}
+    assert by_task["task_a"] == "stable_pass"
+    assert by_task["task_b"] == "only_in_right"

@@ -247,3 +247,111 @@ def test_materialize_does_not_disturb_other_iterations(tmp_path):
         "SELECT iteration, task_id FROM traces ORDER BY iteration, task_id",
     )
     assert [(row["iteration"], row["task_id"]) for row in rows] == [(1, "t1"), (2, "t2")]
+
+
+# ---- iteration_meta -----------------------------------------------
+
+
+def test_iteration_meta_table_is_created(tmp_path):
+    indexer = Indexer(tmp_path / "index.db")
+    indexer.write_manifest({"benchmark": "longmemeval"})
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        names = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert "iteration_meta" in names
+
+
+def test_upsert_iteration_meta_inserts_full_row(tmp_path):
+    indexer = Indexer(tmp_path / "index.db")
+    indexer.upsert_iteration_meta(
+        iteration=3,
+        patch_base=1,
+        budget="high",
+        selection_policy="pareto",
+        advanced_frontier=True,
+        on_pareto_frontier=False,
+        passrate=0.62,
+        mean_score=0.55,
+        proposer_call_dir="/runs/r/proposer_calls/iter_003",
+    )
+
+    rows = _query_all(
+        tmp_path / "index.db", "SELECT * FROM iteration_meta WHERE iteration = 3"
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["patch_base"] == 1
+    assert row["budget"] == "high"
+    assert row["selection_policy"] == "pareto"
+    assert row["advanced_frontier"] == 1
+    assert row["on_pareto_frontier"] == 0
+    assert row["passrate"] == 0.62
+    assert row["mean_score"] == 0.55
+    assert row["proposer_call_dir"].endswith("iter_003")
+
+
+def test_upsert_iteration_meta_partial_update_preserves_existing_fields(tmp_path):
+    indexer = Indexer(tmp_path / "index.db")
+    indexer.upsert_iteration_meta(
+        iteration=5,
+        patch_base=2,
+        budget="medium",
+        selection_policy="curaii",
+        passrate=0.4,
+    )
+    # Partial update: only set advanced_frontier; the other fields must
+    # be preserved (None on a kwarg → COALESCE → existing value kept).
+    indexer.upsert_iteration_meta(iteration=5, advanced_frontier=False)
+
+    rows = _query_all(
+        tmp_path / "index.db", "SELECT * FROM iteration_meta WHERE iteration = 5"
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["patch_base"] == 2
+    assert row["budget"] == "medium"
+    assert row["selection_policy"] == "curaii"
+    assert row["advanced_frontier"] == 0
+    assert row["passrate"] == 0.4
+
+
+def test_refresh_pareto_frontier_sets_flag_and_clears_others(tmp_path):
+    indexer = Indexer(tmp_path / "index.db")
+    indexer.upsert_iteration_meta(iteration=1, on_pareto_frontier=True)
+    indexer.upsert_iteration_meta(iteration=2, on_pareto_frontier=True)
+    indexer.upsert_iteration_meta(iteration=3, on_pareto_frontier=True)
+
+    # New frontier excludes iter 2; iter 4 is brand new and on-frontier.
+    indexer.refresh_pareto_frontier({1: True, 2: False, 3: True, 4: True})
+
+    rows = _query_all(
+        tmp_path / "index.db",
+        "SELECT iteration, on_pareto_frontier FROM iteration_meta ORDER BY iteration",
+    )
+    flag_by_iter = {row["iteration"]: row["on_pareto_frontier"] for row in rows}
+    assert flag_by_iter == {1: 1, 2: 0, 3: 1, 4: 1}
+
+
+def test_refresh_pareto_frontier_clears_iters_not_in_map(tmp_path):
+    """Iters absent from the map must be reset to off-frontier — the
+    map is treated as the complete picture."""
+
+    indexer = Indexer(tmp_path / "index.db")
+    indexer.upsert_iteration_meta(iteration=1, on_pareto_frontier=True)
+    indexer.upsert_iteration_meta(iteration=2, on_pareto_frontier=True)
+    indexer.upsert_iteration_meta(iteration=3, on_pareto_frontier=True)
+
+    # Pass only iter 2 in the map. Iter 1 and 3 must drop to 0.
+    indexer.refresh_pareto_frontier({2: True})
+
+    rows = _query_all(
+        tmp_path / "index.db",
+        "SELECT iteration, on_pareto_frontier FROM iteration_meta ORDER BY iteration",
+    )
+    flag_by_iter = {row["iteration"]: row["on_pareto_frontier"] for row in rows}
+    assert flag_by_iter == {1: 0, 2: 1, 3: 0}

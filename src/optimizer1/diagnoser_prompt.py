@@ -1,28 +1,51 @@
-"""Prompt builder and report schema for the diagnoser subagent.
+"""Prompt builder and report validator for the diagnoser subagent.
 
 The diagnoser is invoked once per proposer iteration when ``--diagnose``
 is on. Its job is to convert an open-ended optimization step into a
 directed fix task by inspecting the workspace traces and source
-snapshot, then producing a single ``diagnoser_report.json`` that the
+snapshot, then producing a structured ``diagnoser_report.md`` that the
 proposer reads as hypothesis input.
 
 The static role / output contract / style guidance lives in
-``prompts/diagnoser_system.md`` so it can be edited as a contract
-rather than as a Python format string. This module only builds the
+``prompts/diagnoser.md`` so it can be edited as a contract rather
+than as a Python format string. This module only builds the
 per-iteration dynamic header that points at the right run, iteration,
 patch base, and trace harness directory.
+
+Output is **markdown** (``diagnoser_report.md``). ``validate_report``
+is a weak structural check (required top-level headings present), not
+a strict schema validator — the proposer judges quality, this just
+gates obvious malformations.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 from optimizer1.prompts import load_role_prompt
 
 
-REPORT_FILENAME = "diagnoser_report.json"
+REPORT_FILENAME = "diagnoser_report.md"
+
+
+REQUIRED_SECTIONS: tuple[str, ...] = (
+    "## Summary",
+    "## Failure modes",
+    "## Context observations",
+    "## Open questions",
+)
+
+
+# Sections the diagnoser must NOT include. The proposer is the only
+# entity that proposes fix directions; the diagnoser only describes
+# failure modes with evidence.
+FORBIDDEN_SECTIONS: tuple[str, ...] = (
+    "## Directions",
+    "## Directions to explore",
+    "## Suggested fixes",
+    "## Recommended next steps",
+    "## Proposed patches",
+)
 
 
 def build_diagnoser_prompt(
@@ -39,11 +62,11 @@ def build_diagnoser_prompt(
 ) -> str:
     """Build the diagnoser system prompt.
 
-    The role / contract / schema text comes from
-    ``prompts/diagnoser_system.md``. Here we only assemble the dynamic
-    "this iteration" header (run id, iteration, patch base clause,
-    optional trace harness pointer, report path), then prepend the
-    static role text so the agent sees one continuous prompt.
+    The role / contract text comes from ``prompts/diagnoser.md``. Here
+    we only assemble the dynamic "this iteration" header (run id,
+    iteration, patch base clause, optional trace harness pointer,
+    report path), then prepend the static role text so the agent sees
+    one continuous prompt.
     """
 
     refs = ", ".join(f"iter_{item:03d}" for item in reference_iterations) or "none"
@@ -107,108 +130,47 @@ def build_diagnoser_prompt(
     return dynamic_header + role_block
 
 
-REPORT_SCHEMA_EXAMPLE: dict[str, Any] = {
-    "summary": "1-3 paragraph overall diagnosis.",
-    "failure_modes": [
-        {
-            "label": "free-text label",
-            "narrative": "multi-paragraph explanation tying trace observations to source code.",
-            "evidence": [
-                {
-                    "kind": "trace",
-                    "path": "traces/spans/iter_007/cand_a.jsonl",
-                    "lines": [42, 58],
-                    "excerpt": "verbatim trace fragment",
-                    "comment": "why this excerpt is load-bearing",
-                },
-                {
-                    "kind": "source",
-                    "path": "source_snapshot/candidate/project_source/src/optimizer1/agent.py",
-                    "lines": [120, 145],
-                    "excerpt": "verbatim source fragment",
-                    "comment": "how this code produces the trace behavior; note diff vs original_project_source if any",
-                },
-            ],
-            "hypothesis": "causal theory in prose, may hedge.",
-            "directions": [
-                {
-                    "summary": "short title for a candidate fix direction",
-                    "rationale": "why this would resolve the failure",
-                    "scope": "files/functions affected",
-                    "risk": "side effects or limits",
-                }
-            ],
-        }
-    ],
-    "context_observations": [
-        "fact discovered during exploration that the proposer should know but is not itself a failure mode."
-    ],
-    "open_questions": [
-        "question diagnoser could not resolve; proposer should verify before depending on it."
-    ],
-}
-
-
-REPORT_TOP_LEVEL_KEYS = (
-    "summary",
-    "failure_modes",
-    "context_observations",
-    "open_questions",
-)
-
-
-def validate_report(payload: Any) -> tuple[bool, str]:
-    """Lightweight schema validation.
+def validate_report(text: str) -> tuple[bool, str]:
+    """Weak structural check: every required section heading is present
+    and no forbidden section is. ``failure_modes`` must contain at
+    least one ``### <label>`` sub-heading.
 
     Returns ``(ok, error_message)``. ``error_message`` is empty on
-    success. We deliberately accept extra keys and tolerate empty
-    optional arrays — the report's narrative quality matters more than
-    strict shape.
+    success. Validation is intentionally weak — content quality is
+    judged by the proposer who reads it, not by this validator.
     """
 
-    if not isinstance(payload, dict):
-        return False, "report must be a JSON object"
-    if "summary" not in payload or not isinstance(payload["summary"], str):
-        return False, "missing or non-string `summary`"
-    if not payload["summary"].strip():
-        return False, "`summary` is empty"
-    failure_modes = payload.get("failure_modes")
-    if not isinstance(failure_modes, list) or not failure_modes:
-        return False, "`failure_modes` must be a non-empty array"
-    for index, mode in enumerate(failure_modes):
-        if not isinstance(mode, dict):
-            return False, f"failure_modes[{index}] must be an object"
-        for required in ("label", "narrative", "hypothesis"):
-            value = mode.get(required)
-            if not isinstance(value, str) or not value.strip():
-                return False, f"failure_modes[{index}].{required} must be a non-empty string"
-        evidence = mode.get("evidence")
-        if not isinstance(evidence, list) or not evidence:
-            return False, f"failure_modes[{index}].evidence must be a non-empty array"
-        for j, entry in enumerate(evidence):
-            if not isinstance(entry, dict):
-                return False, f"failure_modes[{index}].evidence[{j}] must be an object"
-            kind = entry.get("kind")
-            if kind not in {"trace", "source"}:
-                return False, (
-                    f"failure_modes[{index}].evidence[{j}].kind must be 'trace' or 'source'"
-                )
-            if not isinstance(entry.get("path"), str) or not entry["path"].strip():
-                return False, f"failure_modes[{index}].evidence[{j}].path must be a non-empty string"
-        directions = mode.get("directions")
-        if not isinstance(directions, list) or not directions:
-            return False, f"failure_modes[{index}].directions must be a non-empty array"
-        for j, direction in enumerate(directions):
-            if not isinstance(direction, dict):
-                return False, f"failure_modes[{index}].directions[{j}] must be an object"
-            for required in ("summary", "rationale"):
-                value = direction.get(required)
-                if not isinstance(value, str) or not value.strip():
-                    return False, (
-                        f"failure_modes[{index}].directions[{j}].{required} must be a non-empty string"
-                    )
-    for optional_key in ("context_observations", "open_questions"):
-        value = payload.get(optional_key)
-        if value is not None and not isinstance(value, list):
-            return False, f"`{optional_key}` must be a list when present"
+    if not isinstance(text, str) or not text.strip():
+        return False, "report is empty"
+
+    missing = [
+        section for section in REQUIRED_SECTIONS if section not in text
+    ]
+    if missing:
+        return False, f"missing required section(s): {', '.join(missing)}"
+
+    forbidden_present = [
+        section for section in FORBIDDEN_SECTIONS if section in text
+    ]
+    if forbidden_present:
+        return False, (
+            f"report contains forbidden section(s): "
+            f"{', '.join(forbidden_present)}. Directions are the "
+            f"proposer's responsibility, not the diagnoser's."
+        )
+
+    # Failure modes must have at least one labeled mode (### sub-heading)
+    # between "## Failure modes" and the next "## " heading.
+    fm_idx = text.find("## Failure modes")
+    if fm_idx < 0:
+        return False, "missing required section(s): ## Failure modes"
+    after_fm = text[fm_idx + len("## Failure modes") :]
+    next_top = after_fm.find("\n## ")
+    fm_block = after_fm if next_top < 0 else after_fm[:next_top]
+    if "### " not in fm_block:
+        return False, (
+            "Failure modes section must contain at least one labeled "
+            "mode (### <label>)."
+        )
+
     return True, ""

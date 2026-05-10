@@ -29,11 +29,6 @@ from optimizer1.claude_runner import (
     _int_metric,
     run_code_agent_prompt,
 )
-from optimizer1.diagnoser_prompt import (
-    REPORT_FILENAME as DIAGNOSER_REPORT_FILENAME,
-    build_diagnoser_prompt,
-    validate_report as validate_diagnoser_report,
-)
 from optimizer1.dynamic import load_candidate_scaffold
 from optimizer1.evaluation import EvaluationRunner, run_initial_frontier
 from optimizer1.locomo import default_data_path, load_locomo_examples, prepare_locomo, select_split
@@ -42,7 +37,6 @@ from optimizer1.optimization_cells import get_target_cells
 from optimizer1.pareto import ParetoPoint, pareto_frontier, save_frontier
 from optimizer1.post_eval import write_diff_digest, write_post_eval_artifacts
 from optimizer1.traces import TraceHarness, has_adapter
-from optimizer1.traces.embeddings import DiffEmbedder
 from optimizer1.proposer_prompt import build_progressive_proposer_prompt
 from optimizer1.scaffolds import DEFAULT_EVOLUTION_SEED_SCAFFOLDS, DEFAULT_SCAFFOLD_TOP_KS
 from optimizer1.scaffolds.base import ScaffoldConfig
@@ -81,6 +75,7 @@ class OptimizerConfig:
     claude_model: str = "deepseek-v4-pro[1m]"
     claude_base_url: str = "https://api.deepseek.com/anthropic"
     claude_auth_token: str | None = None
+    claude_native_auth: bool = False
     propose_timeout_s: int = 2400
     dry_run: bool = False
     max_context_chars: int = 6000
@@ -120,9 +115,6 @@ class OptimizerConfig:
     test_limit: int = 0
     trace_baseline_path: Path | None = None
     proposer_show_trace_harness_section: bool = True
-    diff_embedding_model: str | None = None
-    diff_embedding_base_url: str | None = None
-    diff_embedding_api_key: str | None = None
     diagnose: bool = False
 
 
@@ -140,7 +132,7 @@ class LocomoOptimizer:
         self.summary_path = self.run_dir / "evolution_summary.jsonl"
         self.generated_dir = self.run_dir / "generated"
         self.progressive_state_path = self.run_dir / "progressive_state.json"
-        self.stagnation_md_path = self.run_dir / "stagnation.md"
+        self.historian_report_path = self.run_dir / "historian_report.md"
         self.bandit_state_path = self.run_dir / "bandit_state.json"
         self.candidate_score_table_path = self.run_dir / "candidate_score_table.json"
         self.retrieval_diagnostics_summary_path = (
@@ -148,7 +140,6 @@ class LocomoOptimizer:
         )
         self.iteration_index_path = self.run_dir / "iteration_index.json"
         self.diff_summary_path = self.run_dir / "diff_summary.jsonl"
-        self.diagnoser_cache_dir = self.run_dir / "diagnoser_cache"
         self._validate_proposer_sandbox_policy()
         self._validate_proposer_agent()
         self.trace_harness: TraceHarness = self._build_trace_harness()
@@ -160,22 +151,10 @@ class LocomoOptimizer:
                 f"No trace adapter is registered for benchmark "
                 f"{benchmark!r}. Register one in optimizer1.traces.adapters."
             )
-        diff_embedder = self._build_diff_embedder()
         return TraceHarness(
             run_dir=self.run_dir,
             benchmark=benchmark,
             baseline_path=self.config.trace_baseline_path,
-            diff_embedder=diff_embedder,
-        )
-
-    def _build_diff_embedder(self) -> DiffEmbedder | None:
-        model = (self.config.diff_embedding_model or "").strip()
-        if not model:
-            return None
-        return DiffEmbedder(
-            model=model,
-            api_key=self.config.diff_embedding_api_key,
-            base_url=self.config.diff_embedding_base_url or None,
         )
 
     def _validate_proposer_agent(self) -> None:
@@ -188,7 +167,16 @@ class LocomoOptimizer:
 
     def _validate_proposer_sandbox_policy(self) -> None:
         policy = self.config.selection_policy.strip().lower()
-        if policy not in {"progressive", "bandit", "random", "recent", "best", "curai", "curaii"}:
+        if policy not in {
+            "progressive",
+            "bandit",
+            "random",
+            "recent",
+            "best",
+            "curai",
+            "curaii",
+            "pareto",
+        }:
             return
         sandbox = self.config.proposer_sandbox.strip().lower()
         if sandbox != "docker":
@@ -254,6 +242,7 @@ class LocomoOptimizer:
             self.trace_harness.record_iteration(
                 iteration=0,
                 candidates=candidates,
+                selection_policy=self.config.selection_policy,
             )
 
         self._save_best_candidates(candidates)
@@ -277,6 +266,10 @@ class LocomoOptimizer:
             elif self.config.selection_policy in {"random", "recent", "best"}:
                 budget = forced_budget or "medium"
             else:
+                # default and pareto both pin to fixed-high context every
+                # iter; the only difference is that pareto resamples the
+                # patch base from the current Pareto frontier instead of
+                # always re-baselining from the clean snapshot.
                 budget = forced_budget or "high"
             evaluated = self._run_progressive_proposer_iteration(
                 iteration,
@@ -284,7 +277,16 @@ class LocomoOptimizer:
                 examples,
                 budget=budget,
                 adaptive=self.config.selection_policy
-                in {"progressive", "bandit", "random", "recent", "best", "curai", "curaii"},
+                in {
+                    "progressive",
+                    "bandit",
+                    "random",
+                    "recent",
+                    "best",
+                    "curai",
+                    "curaii",
+                    "pareto",
+                },
                 selection_policy=self.config.selection_policy,
                 bandit_policy=bandit_policy,
             )
@@ -303,15 +305,32 @@ class LocomoOptimizer:
                 iteration=iteration,
                 candidates=evaluated,
             )
-            if self.config.selection_policy in {"progressive", "curai", "curaii"}:
-                self._update_progressive_state(
+            if self.config.selection_policy in {"progressive", "curai", "curaii", "pareto"}:
+                # pareto's advance signal is "passrate strictly beat the
+                # historical best"; curai / curaii / progressive treat
+                # joining the top-K frontier as advance. Both routes
+                # update progressive_state.json so historian can read the
+                # stagnation_count uniformly.
+                advance_signal_ids = (
+                    None
+                    if self.config.selection_policy == "pareto"
+                    else previous_frontier_ids
+                )
+                advanced = self._update_progressive_state(
                     iteration=iteration,
                     budget=budget,
                     previous_best_passrate=previous_best_passrate,
-                    previous_frontier_ids=previous_frontier_ids,
+                    previous_frontier_ids=advance_signal_ids,
                     candidates=candidates,
                     evaluated=evaluated,
                 )
+                # Mirror into iteration_meta so MCP queries see a single
+                # source of truth for "did this iter advance".
+                if self.trace_harness.indexer.db_path.exists():
+                    self.trace_harness.indexer.upsert_iteration_meta(
+                        iteration=iteration,
+                        advanced_frontier=advanced,
+                    )
             if self.config.selection_policy == "bandit":
                 self._update_bandit_state(
                     iteration=iteration,
@@ -382,21 +401,23 @@ class LocomoOptimizer:
         workspace_generated_dir = workspace_dir / "generated"
         reference_iterations: tuple[int, ...] = ()
         policy_name = selection_policy or ("progressive" if adaptive else "default")
-        curai_active = (
-            policy_name in {"curai", "curaii"} and budget == "high"
-        )
-        curai_stagnation_count = (
+        # Stagnation forensics is offered to any policy that maintains a
+        # stagnation_count via progressive_state.json (pareto, curai,
+        # curaii). The historian subagent runs once stagnation_count >= 1.
+        stagnation_eligible_policy = policy_name in {"pareto", "curai", "curaii"}
+        stagnation_count = (
             int(self._load_progressive_state().get("stagnation_count") or 0)
-            if curai_active
+            if stagnation_eligible_policy
             else 0
         )
-        curai_stagnation_doc_exists = (
-            curai_active and self.stagnation_md_path.exists()
+        stagnation_active = stagnation_eligible_policy and stagnation_count >= 1
+        historian_report_exists = (
+            stagnation_active and self.historian_report_path.exists()
         )
         current_frontier_passrate: float | None = None
         current_frontier_average_score: float | None = None
         current_frontier_best_iter: int | None = None
-        if curai_active:
+        if stagnation_active:
             frontier_candidates = self._quality_frontier(existing_candidates)
             if frontier_candidates:
                 frontier_best = max(frontier_candidates, key=_candidate_score)
@@ -416,19 +437,26 @@ class LocomoOptimizer:
                 budget=budget,
                 baseline_passrate=self._seed_passrate(existing_candidates),
             )
-            if curaii_base_iter is not None:
-                base_candidate = next(
-                    (
-                        item
-                        for item in existing_candidates
-                        if _candidate_iteration(item.candidate_id)
-                        == curaii_base_iter
-                    ),
-                    None,
-                )
-                if base_candidate is not None:
-                    curaii_base_passrate = base_candidate.passrate
-                    curaii_base_average_score = base_candidate.average_score
+        elif policy_name == "pareto":
+            curaii_base_iter = self._pareto_select_base(
+                existing_candidates,
+                iteration=iteration,
+                baseline_passrate=self._seed_passrate(existing_candidates),
+            )
+            curaii_refs_override = None
+        if curaii_base_iter is not None:
+            base_candidate = next(
+                (
+                    item
+                    for item in existing_candidates
+                    if _candidate_iteration(item.candidate_id)
+                    == curaii_base_iter
+                ),
+                None,
+            )
+            if base_candidate is not None:
+                curaii_base_passrate = base_candidate.passrate
+                curaii_base_average_score = base_candidate.average_score
         for attempt in range(1, max_attempts + 1):
             if bandit_policy:
                 refs_override: tuple[int, ...] | None = tuple(
@@ -445,22 +473,18 @@ class LocomoOptimizer:
                 bandit_policy=bandit_policy,
                 base_iter=curaii_base_iter,
             )
-            if curai_stagnation_doc_exists:
-                shutil.copy2(self.stagnation_md_path, workspace_dir / "stagnation.md")
+            if historian_report_exists:
+                shutil.copy2(
+                    self.historian_report_path,
+                    workspace_dir / "historian_report.md",
+                )
             workspace_generated_dir = workspace_dir / "generated"
             workspace_source_snapshot_dir = workspace_dir / "source_snapshot"
             workspace_pending_eval_path = workspace_dir / "pending_eval.json"
             workspace_traces_dir = workspace_dir / "traces"
-            diagnoser_report_path = self._run_diagnoser_subagent(
-                iteration=iteration,
-                workspace_dir=workspace_dir,
-                call_dir=call_dir,
-                reference_iterations=reference_iterations,
-                base_iter=curaii_base_iter,
-                trace_harness_dir=(
-                    workspace_traces_dir if workspace_traces_dir.exists() else None
-                ),
-            )
+            # The diagnoser is invoked by the proposer's main session via
+            # the Task tool; no pre-call here (the subagent contract is
+            # mounted through `.claude/agents/diagnoser.md`).
             prompt = build_progressive_proposer_prompt(
                 run_id=self.config.run_id,
                 iteration=iteration,
@@ -483,10 +507,13 @@ class LocomoOptimizer:
                 selection_policy=policy_name,
                 bandit_policy=bandit_policy,
                 benchmark_name=self._benchmark_prompt_name(),
-                raw_data_policy=self._raw_data_policy_name(),
-                curai_active=curai_active,
-                curai_stagnation_count=curai_stagnation_count,
-                curai_stagnation_doc_exists=curai_stagnation_doc_exists,
+                stagnation_active=stagnation_active,
+                stagnation_count=stagnation_count,
+                historian_report_exists=historian_report_exists,
+                historian_via_subagent=(
+                    stagnation_active
+                    and self._uses_claude_subagent_historian()
+                ),
                 current_frontier_passrate=current_frontier_passrate,
                 current_frontier_average_score=current_frontier_average_score,
                 current_frontier_best_iter=current_frontier_best_iter,
@@ -498,8 +525,8 @@ class LocomoOptimizer:
                     if self.config.proposer_show_trace_harness_section
                     else None
                 ),
-                diagnoser_report_path=diagnoser_report_path,
                 diagnoser_via_subagent=self._uses_claude_subagent_diagnoser(),
+                subagent_mode=self._uses_claude_subagent_proposer(),
             )
             if retry_note:
                 prompt = f"{prompt}\n\n{retry_note}"
@@ -793,6 +820,10 @@ class LocomoOptimizer:
         self.trace_harness.record_iteration(
             iteration=iteration,
             candidates=evaluated,
+            patch_base=curaii_base_iter,
+            budget=budget,
+            selection_policy=policy_name,
+            proposer_call_dir=str(call_dir),
         )
         self._refresh_run_indexes(existing_candidates + evaluated)
         return evaluated
@@ -883,6 +914,21 @@ class LocomoOptimizer:
         self._deploy_subagent_assets(workspace_dir)
         return workspace_dir, reference_iterations
 
+    def _uses_claude_subagent_proposer(self) -> bool:
+        """Whether the main proposer session runs as a Claude Code subagent.
+
+        Active for every Claude Code proposer run: the role/identity/
+        constraints are delivered to the model through Claude Code's
+        native subagent protocol — ``proposer.md`` becomes the subagent
+        system prompt and ``workspace.md`` becomes the auto-loaded
+        ``<workspace>/CLAUDE.md`` — instead of being concatenated into
+        the user message. Independent of ``--diagnose`` so that even a
+        baseline run gets the subagent system-prompt channel; the
+        legacy prompt-string injection path is no longer reachable.
+        """
+
+        return self.config.proposer_agent.strip().lower() == "claude"
+
     def _uses_claude_subagent_diagnoser(self) -> bool:
         """Whether the diagnoser runs as a Claude Code subagent.
 
@@ -895,37 +941,61 @@ class LocomoOptimizer:
 
         return (
             self.config.diagnose
-            and self.config.proposer_agent.strip().lower() == "claude"
+            and self._uses_claude_subagent_proposer()
+        )
+
+    def _uses_claude_subagent_historian(self) -> bool:
+        """Whether the historian runs as a Claude Code subagent.
+
+        Active when the proposer agent is Claude *and* the selection
+        policy maintains a stagnation_count (pareto / curai / curaii).
+        The proposer's main session invokes the historian via the Task
+        tool only when ``stagnation_count >= 1``; the workspace asset
+        is deployed eagerly (always present for stagnation-eligible
+        policies) so the Task call resolves regardless of when
+        stagnation first kicks in.
+        """
+
+        return (
+            self._uses_claude_subagent_proposer()
+            and self.config.selection_policy.strip().lower()
+            in {"pareto", "curai", "curaii"}
         )
 
     def _deploy_subagent_assets(self, workspace_dir: Path) -> None:
-        """Copy the per-workspace Claude Code subagent assets when active.
+        """Copy the per-workspace Claude Code subagent assets.
 
         Routes the canonical agent files from ``optimizer1.prompts``
-        to the locations Claude Code's protocol expects, treating
-        proposer and diagnoser symmetrically as named subagents:
+        to the locations Claude Code's protocol expects:
 
           - ``proposer.md`` → ``<workspace>/.claude/agents/proposer.md``
             (the main session runs as this subagent via
-            ``claude --agent proposer``).
-          - ``diagnoser.md`` → ``<workspace>/.claude/agents/diagnoser.md``
-            (invoked from the proposer via the Task tool).
+            ``claude --agent proposer``). Deployed for every Claude
+            proposer run, regardless of ``--diagnose``.
           - ``workspace.md`` → ``<workspace>/CLAUDE.md``
             (auto-loaded project-level *constraints* — Quality Gate,
             edit scope, pending_eval.json conventions, etc. — not
-            anyone's role).
+            anyone's role). Deployed for every Claude proposer run.
+          - ``diagnoser.md`` → ``<workspace>/.claude/agents/diagnoser.md``
+            (invoked from the proposer via the Task tool). Deployed
+            only when ``--diagnose`` is on.
+          - ``historian.md`` → ``<workspace>/.claude/agents/historian.md``
+            (invoked from the proposer via the Task tool when the
+            optimization has stalled). Deployed for every Claude
+            proposer run on a stagnation-eligible policy
+            (``pareto`` / ``curai`` / ``curaii``); the proposer skips
+            invocation when ``stagnation_count == 0``.
 
-        No-op for runs where the diagnoser is not enabled — that path
-        still relies on the legacy prompt-string injection through
-        ``load_role_prompt``.
+        No-op when the proposer agent is not Claude.
         """
 
-        if not self._uses_claude_subagent_diagnoser():
+        if not self._uses_claude_subagent_proposer():
             return
         from optimizer1.prompts import role_prompt_path
 
         proposer_src = role_prompt_path("proposer")
         diagnoser_src = role_prompt_path("diagnoser")
+        historian_src = role_prompt_path("historian")
         workspace_src = role_prompt_path("workspace")
 
         if workspace_src.exists():
@@ -935,10 +1005,12 @@ class LocomoOptimizer:
             )
         agents_dir = workspace_dir / ".claude" / "agents"
         agents_dir.mkdir(parents=True, exist_ok=True)
-        for src, dest_name in (
-            (proposer_src, "proposer.md"),
-            (diagnoser_src, "diagnoser.md"),
-        ):
+        agent_files: list[tuple[Path, str]] = [(proposer_src, "proposer.md")]
+        if self._uses_claude_subagent_diagnoser():
+            agent_files.append((diagnoser_src, "diagnoser.md"))
+        if self._uses_claude_subagent_historian():
+            agent_files.append((historian_src, "historian.md"))
+        for src, dest_name in agent_files:
             if src.exists():
                 (agents_dir / dest_name).write_text(
                     src.read_text(encoding="utf-8"),
@@ -965,9 +1037,10 @@ class LocomoOptimizer:
             "TRACE_DB": str(workspace_dir / "traces" / "index.db"),
             "PYTHONPATH": str(self.project_root / "src"),
         }
-        # trace_similar re-embeds the proposer's query at call-time; it
-        # needs an OpenAI key. Forward whatever the parent process has.
-        for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
+        # trace_similar lazily embeds historical diffs and the
+        # proposer's query; it needs an OpenAI-compatible endpoint.
+        # Forward whatever the parent process has.
+        for key in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "DIFF_EMBEDDING_MODEL"):
             value = os.environ.get(key)
             if value:
                 env[key] = value
@@ -1443,172 +1516,16 @@ class LocomoOptimizer:
             model=self.config.claude_model,
             claude_base_url=self.config.claude_base_url,
             claude_auth_token=self.config.claude_auth_token,
+            claude_native_auth=self.config.claude_native_auth,
         )
-        # In subagent mode the proposer runs as the named
-        # `.claude/agents/proposer.md` subagent — its frontmatter
-        # supplies the system prompt and tool allowlist, so the
-        # role / identity text never enters the user message. The
-        # diagnoser is reached from there via the Task tool.
-        if self._uses_claude_subagent_diagnoser() and name == "proposer":
+        # The proposer always runs as the named ``.claude/agents/proposer.md``
+        # subagent — its frontmatter supplies the system prompt and tool
+        # allowlist, so the role / identity text never enters the user
+        # message. (The diagnoser, when enabled, is reached from there
+        # via the Task tool and uses its own subagent file.)
+        if self._uses_claude_subagent_proposer() and name == "proposer":
             kwargs["claude_agent_name"] = "proposer"
         return run_code_agent_prompt(prompt, agent=agent, **kwargs)
-
-    def _diagnoser_cache_key(
-        self,
-        *,
-        base_iter: int | None,
-        reference_iterations: tuple[int, ...],
-    ) -> str:
-        parts = [
-            "v1",
-            self.workspace_spec.benchmark,
-            "base=" + (str(base_iter) if base_iter is not None else "none"),
-            "refs=" + ",".join(str(item) for item in sorted(reference_iterations)),
-        ]
-        return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
-
-    def _diagnoser_cache_path(self, key: str) -> Path:
-        return self.diagnoser_cache_dir / f"{key}.json"
-
-    def _run_diagnoser_subagent(
-        self,
-        *,
-        iteration: int,
-        workspace_dir: Path,
-        call_dir: Path,
-        reference_iterations: tuple[int, ...],
-        base_iter: int | None,
-        trace_harness_dir: Path | None,
-    ) -> Path | None:
-        """Run the diagnoser subagent in the same proposer container.
-
-        Returns the path to ``diagnoser_report.json`` inside
-        ``workspace_dir`` on success (cache hit or fresh run that
-        produced a valid report), or ``None`` if the diagnoser failed
-        or wrote an invalid report. Failure is non-fatal: the proposer
-        will still run, just without a diagnoser section.
-        """
-
-        if not self.config.diagnose:
-            return None
-        if self._uses_claude_subagent_diagnoser():
-            # Claude proposer invokes the diagnoser via Task tool from
-            # its main session; the optimizer does not pre-call it and
-            # there is no pre-written report path to advertise.
-            return None
-
-        report_path = workspace_dir / DIAGNOSER_REPORT_FILENAME
-        cache_key = self._diagnoser_cache_key(
-            base_iter=base_iter,
-            reference_iterations=reference_iterations,
-        )
-        cache_path = self._diagnoser_cache_path(cache_key)
-
-        if cache_path.exists():
-            try:
-                cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                cached = None
-            if cached is not None:
-                ok, _ = validate_diagnoser_report(cached)
-                if ok:
-                    report_path.write_text(
-                        json.dumps(cached, indent=2, ensure_ascii=False),
-                        encoding="utf-8",
-                    )
-                    self._append_event(
-                        {
-                            "iteration": iteration,
-                            "event": "diagnoser_cache_hit",
-                            "cache_key": cache_key,
-                            "base_iter": base_iter,
-                            "reference_iterations": list(reference_iterations),
-                        }
-                    )
-                    return report_path
-
-        prompt = build_diagnoser_prompt(
-            run_id=self.config.run_id,
-            iteration=iteration,
-            workspace_dir=workspace_dir,
-            target_system=self.config.progressive_target_system,
-            benchmark_name=self._benchmark_prompt_name(),
-            reference_iterations=reference_iterations,
-            current_base_iter=base_iter,
-            trace_harness_dir=trace_harness_dir,
-            report_path=report_path,
-        )
-        if report_path.exists():
-            # Stale report from a prior attempt — diagnoser must produce
-            # a fresh one; otherwise validation would silently accept
-            # the old output even if this run failed early.
-            report_path.unlink()
-
-        result = self._run_proposer_agent(
-            prompt,
-            log_dir=call_dir / "agent" / "diagnoser",
-            name="diagnoser",
-            cwd=workspace_dir,
-        )
-        ok_run = (
-            getattr(result, "returncode", None) == 0
-            and not getattr(result, "timed_out", False)
-            and report_path.exists()
-        )
-        if not ok_run:
-            self._append_event(
-                {
-                    "iteration": iteration,
-                    "event": "diagnoser_run_failed",
-                    "cache_key": cache_key,
-                    "returncode": getattr(result, "returncode", None),
-                    "timed_out": getattr(result, "timed_out", False),
-                    "report_written": report_path.exists(),
-                }
-            )
-            return None
-
-        try:
-            payload = json.loads(report_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            self._append_event(
-                {
-                    "iteration": iteration,
-                    "event": "diagnoser_invalid_json",
-                    "cache_key": cache_key,
-                    "error": str(exc),
-                }
-            )
-            return None
-
-        ok, error = validate_diagnoser_report(payload)
-        if not ok:
-            self._append_event(
-                {
-                    "iteration": iteration,
-                    "event": "diagnoser_schema_violation",
-                    "cache_key": cache_key,
-                    "error": error,
-                }
-            )
-            return None
-
-        self.diagnoser_cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        self._append_event(
-            {
-                "iteration": iteration,
-                "event": "diagnoser_cache_store",
-                "cache_key": cache_key,
-                "base_iter": base_iter,
-                "reference_iterations": list(reference_iterations),
-                "failure_modes": len(payload.get("failure_modes") or []),
-            }
-        )
-        return report_path
 
     def _proposer_sandbox_config(self) -> ProposerSandboxConfig | None:
         kind = self.config.proposer_sandbox.strip().lower()
@@ -2044,7 +1961,19 @@ class LocomoOptimizer:
         previous_frontier_ids: set[str] | None = None,
         candidates: list[CandidateResult],
         evaluated: list[CandidateResult],
-    ) -> None:
+    ) -> bool:
+        """Update ``progressive_state.json`` and return whether the
+        iteration advanced (``improved=True`` resets stagnation_count;
+        else stagnation_count increments).
+
+        Advance signal:
+        - ``previous_frontier_ids`` provided → frontier-id diff
+          (curai / curaii / progressive use this — joining top-K
+          frontier counts as advance).
+        - ``previous_frontier_ids`` is ``None`` → strict passrate gate
+          (pareto uses this — best passrate must strictly increase).
+        """
+
         best = max(candidates, key=_candidate_score) if candidates else None
         best_passrate = best.passrate if best is not None else 0.0
         frontier_ids = self._quality_frontier_ids(candidates)
@@ -2055,8 +1984,8 @@ class LocomoOptimizer:
             improved = bool(evaluated_ids & (frontier_ids - previous_frontier_ids))
         prior = self._load_progressive_state()
         stagnation = 0 if improved else int(prior.get("stagnation_count") or 0) + 1
-        if improved and self.stagnation_md_path.exists():
-            self.stagnation_md_path.unlink()
+        if improved and self.historian_report_path.exists():
+            self.historian_report_path.unlink()
         if iteration < self.config.progressive_initial_low_iterations:
             next_budget = "low"
         elif improved:
@@ -2083,6 +2012,7 @@ class LocomoOptimizer:
             json.dumps(state, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        return improved
 
     def _load_bandit_state(self) -> dict[str, Any]:
         if not self.bandit_state_path.exists():
@@ -2691,6 +2621,52 @@ class LocomoOptimizer:
         # _reference_iterations_for_budget path.
         return chosen, None
 
+    def _pareto_select_base(
+        self,
+        existing_candidates: list[CandidateResult],
+        *,
+        iteration: int,
+        baseline_passrate: float,
+    ) -> int | None:
+        """Sample a patch base for the ``pareto`` selection policy.
+
+        Returns the iteration index of a candidate drawn uniformly at
+        random from the current passrate × token_consuming Pareto
+        frontier, restricted to candidates whose archived
+        ``project_source/`` is on disk and whose passrate strictly
+        exceeds the seed baseline (so a tied/worse parent is never
+        chosen). Returns ``None`` when no eligible frontier candidate
+        exists; the caller then falls back to the clean snapshot, i.e.
+        the same behavior as the ``default`` policy for that iter.
+
+        Reference iterations always fall through to "all available"
+        (``refs_override=None``) — pareto's only divergence from
+        ``default`` is the patch base, not the iter context budget.
+        """
+
+        frontier = self._quality_frontier(existing_candidates)
+        if not frontier:
+            return None
+        eligible: list[int] = []
+        for item in frontier:
+            base_iter = _candidate_iteration(item.candidate_id)
+            if base_iter is None or base_iter <= 0 or base_iter >= iteration:
+                continue
+            if item.passrate <= baseline_passrate:
+                continue
+            base_source = (
+                self._iteration_dir(base_iter)
+                / "source_snapshot"
+                / "candidate"
+                / "project_source"
+            )
+            if not base_source.exists():
+                continue
+            eligible.append(base_iter)
+        if not eligible:
+            return None
+        return random.choice(eligible)
+
     def _reference_iterations_for_budget(
         self,
         budget: str,
@@ -3078,10 +3054,12 @@ class LocomoOptimizer:
             self._copy_if_exists(workspace_pending, self.pending_eval_path)
             self._copy_if_exists(workspace_pending, call_dir / "pending_eval.raw.json")
 
-        workspace_stagnation = workspace_dir / "stagnation.md"
-        if workspace_stagnation.exists():
-            self._copy_if_exists(workspace_stagnation, self.stagnation_md_path)
-            self._copy_if_exists(workspace_stagnation, call_dir / "stagnation.md")
+        workspace_historian = workspace_dir / "historian_report.md"
+        if workspace_historian.exists():
+            self._copy_if_exists(workspace_historian, self.historian_report_path)
+            self._copy_if_exists(
+                workspace_historian, call_dir / "historian_report.md"
+            )
 
     def _normalize_workspace_candidate_paths(
         self,
@@ -3312,14 +3290,44 @@ class LocomoOptimizer:
 
     def _save_best_candidates(self, candidates: list[CandidateResult]) -> None:
         self.frontier_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [
-            item.to_dict()
-            for item in self._quality_frontier(candidates)
-        ]
+        frontier = self._quality_frontier(candidates)
+        payload = [item.to_dict() for item in frontier]
         self.frontier_path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        self._sync_pareto_frontier_index(candidates, frontier)
+
+    def _sync_pareto_frontier_index(
+        self,
+        candidates: list[CandidateResult],
+        frontier: list[CandidateResult],
+    ) -> None:
+        """Mirror the current pareto frontier into iteration_meta.
+
+        Builds a {iteration → on_pareto_frontier} map across every iter
+        we have at least one candidate for, then bulk-updates the
+        ``iteration_meta`` table so MCP queries see a consistent
+        snapshot. No-op when the trace index does not yet exist.
+        """
+
+        if not candidates:
+            return
+        if not self.trace_harness.indexer.db_path.exists():
+            return
+        frontier_iters = {
+            _candidate_iteration(item.candidate_id)
+            for item in frontier
+        }
+        frontier_iters.discard(None)
+        flags: dict[int, bool] = {}
+        for candidate in candidates:
+            iteration = _candidate_iteration(candidate.candidate_id)
+            if iteration is None:
+                continue
+            flags[iteration] = iteration in frontier_iters
+        if flags:
+            self.trace_harness.indexer.refresh_pareto_frontier(flags)
 
     def _append_summary(
         self,

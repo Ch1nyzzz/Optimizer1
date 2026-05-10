@@ -60,10 +60,10 @@ def build_progressive_proposer_prompt(
     selection_policy: str = "progressive",
     bandit_policy: dict[str, object] | None = None,
     benchmark_name: str = "LOCOMO conversational-memory QA",
-    raw_data_policy: str = "raw LOCOMO data",
-    curai_active: bool = False,
-    curai_stagnation_count: int = 0,
-    curai_stagnation_doc_exists: bool = False,
+    stagnation_active: bool = False,
+    stagnation_count: int = 0,
+    historian_report_exists: bool = False,
+    historian_via_subagent: bool = False,
     current_frontier_passrate: float | None = None,
     current_frontier_average_score: float | None = None,
     current_frontier_best_iter: int | None = None,
@@ -71,10 +71,19 @@ def build_progressive_proposer_prompt(
     current_base_passrate: float | None = None,
     current_base_average_score: float | None = None,
     trace_harness_dir: Path | None = None,
-    diagnoser_report_path: Path | None = None,
     diagnoser_via_subagent: bool = False,
+    subagent_mode: bool = False,
 ) -> str:
-    """Build the proposer prompt for scoped progressive-context runs."""
+    """Build the proposer prompt for scoped progressive-context runs.
+
+    ``subagent_mode=True`` selects the Claude Code subagent path: the
+    role / workspace constraints are delivered via ``proposer.md`` as
+    the subagent's system prompt and ``workspace.md`` as the
+    auto-loaded ``<workspace>/CLAUDE.md``, so the user message must
+    not duplicate them. Set ``False`` only for the (deprecated) legacy
+    prompt-string injection path that concatenates the role document
+    onto the user message.
+    """
 
     direction_lines = "\n".join(f"- {line}" for line in optimization_directions)
     focus_section = ""
@@ -155,101 +164,74 @@ overall system-level redesign:
             )
     else:
         reference_role_note = ""
-    curai_section = ""
-    if curai_active:
+    historian_section = ""
+    if stagnation_active:
         if (
             current_frontier_passrate is not None
             and current_frontier_best_iter is not None
         ):
-            avg_clause = (
-                f", average_score {current_frontier_average_score:.4f}"
-                if current_frontier_average_score is not None
-                else ""
-            )
             frontier_anchor_clause = (
-                f" against the current Pareto frontier (best passrate "
-                f"{current_frontier_passrate:.4f}{avg_clause} from "
-                f"iter_{current_frontier_best_iter:03d}; your candidate must "
-                f"reach passrate ≥ {current_frontier_passrate:.4f} or strictly "
-                f"expand average_score on the frontier to count as progress)"
+                f" against the current frontier-best passrate of "
+                f"{current_frontier_passrate:.4f} at "
+                f"iter_{current_frontier_best_iter:03d} (your candidate "
+                f"must strictly exceed it to count as advance)"
             )
         else:
             frontier_anchor_clause = ""
-        if curai_stagnation_doc_exists:
-            curai_section = f"""
-## Stagnation Forensics (CuraI mode) — Incremental Update
+        if historian_via_subagent:
+            mode_clause = (
+                "Invoke the `historian` subagent via the Task tool"
+                if not historian_report_exists
+                else (
+                    "Invoke the `historian` subagent via the Task tool to "
+                    "incrementally update the existing report"
+                )
+            )
+            existing_clause = (
+                ""
+                if not historian_report_exists
+                else (
+                    " A previous `historian_report.md` from earlier in "
+                    "this episode is already at the workspace root; the "
+                    "subagent will update it in place rather than redo "
+                    "the full diagnosis."
+                )
+            )
+            historian_section = f"""
+## Historian subagent (call first — stalled for {stagnation_count} iters)
 
-The optimization has stalled for {curai_stagnation_count} consecutive iterations{frontier_anchor_clause}.
-Progressive remains at `high` budget. A `stagnation.md` from earlier
-iterations of this episode is already at the workspace root. Build on it
-incrementally — do NOT redo the full historical diagnosis.
+The optimization has stalled for {stagnation_count} consecutive iterations{frontier_anchor_clause}.{existing_clause}
 
-### Phase 1 — Diagnose (incremental)
-1. Read `stagnation.md` first to load the existing diagnosis: mechanisms
-   already tried, the shared dead-end pattern, the working hypothesis, and
-   directions to avoid.
-2. Read ONLY the most recent stalled iteration's `diff_digest.md` (the
-   latest entry under `reference_iterations/iter_NNN/`) and, if needed,
-   that single iteration's `diff.patch`. Do not re-read older iterations'
-   diffs unless the new evidence specifically contradicts a claim already
-   recorded in `stagnation.md`.
-3. Update `stagnation.md` in place: append the new attempted mechanism,
-   revise the working hypothesis if the new evidence shifts it, update the
-   "directions to avoid" / "directions to explore" lists, and bump the
-   stagnation streak. Keep the document under ~3000 words; prune older
-   redundant entries by summarizing them.
+Before any other investigation:
 
-### Phase 2 — Decide
-After updating `stagnation.md`, write `pending_eval.json`. The candidate
-must implement a direction NOT already recorded under "directions to
-avoid". Add an optional `stagnation_analysis` field to the candidate JSON
-pointing at the working hypothesis you are now testing. Reject mechanisms
-structurally similar to the recently failed diffs catalogued in
-`stagnation.md`.
+1. {mode_clause}. It will read the recent stalled iters' diffs and
+   traces, then write `historian_report.md` at the workspace root with
+   shared dead-end pattern, working hypothesis, and directions to avoid.
+   The historian's full contract is in `.claude/agents/historian.md`;
+   you do not need to restate its instructions to it.
+2. Read `historian_report.md` after the subagent returns.
+3. Combine its **Directions to avoid** with the diagnoser's per-base
+   failure modes when designing this iter's candidate. Reject any
+   mechanism that matches a listed avoid-pattern.
 """
         else:
-            curai_section = f"""
-## Stagnation Forensics (CuraI mode) — Initial Diagnosis
+            existing_clause = (
+                ""
+                if not historian_report_exists
+                else (
+                    " A previous `historian_report.md` from earlier in "
+                    "this episode is already at the workspace root."
+                )
+            )
+            historian_section = f"""
+## Stagnation context (stalled for {stagnation_count} iters)
 
-The optimization has stalled for {curai_stagnation_count} consecutive iterations{frontier_anchor_clause}.
-Progressive escalated to `high` budget; this is the first high-budget
-iteration of this stagnation episode. Persist your reasoning to
-`stagnation.md` so subsequent iterations can build on it incrementally
-without re-reading every diff.
+The optimization has stalled for {stagnation_count} consecutive iterations{frontier_anchor_clause}.{existing_clause}
 
-### Phase 1 — Diagnose
-Use `candidate_score_table.json`, `best_candidates.json`, and
-`evolution_summary.jsonl` to identify the most recent iterations whose
-candidates did NOT advance the pareto frontier. For each of those stalled
-iterations, read its `diff_digest.md` and then `diff.patch` under
-`reference_iterations/iter_NNN/`. Record what mechanism was tried, what the
-hypothesis claimed, and how `passrate` / `average_score` actually moved.
-Identify the shared dead-end pattern across these stalled diffs.
-
-After completing the diagnosis, write a `stagnation.md` file at the
-workspace root using this structure (markdown):
-
-    # Stagnation Forensics
-    ## Episode summary
-    - Current iteration: {iteration}
-    - Stagnation streak: {curai_stagnation_count}
-    ## Mechanisms attempted
-    - iter_NNN — <name> — <delta passrate / avg_score> — <one-line outcome>
-    ## Shared dead-end pattern
-    <2-4 sentences>
-    ## Working hypothesis
-    <your current best theory of WHY the search is stuck>
-    ## Directions to avoid
-    - <pattern>
-    ## Directions to explore
-    - <direction with rationale>
-
-### Phase 2 — Decide
-Only after writing `stagnation.md` may you write `pending_eval.json`. Add
-an optional `stagnation_analysis` field to the candidate JSON summarizing
-the shared dead-end and the new mechanism direction this iteration
-explores. Reject mechanisms that are structurally similar to the recent
-stalled diffs.
+Read `historian_report.md` if it exists at the workspace root before
+designing this iter's candidate. Combine its **Directions to avoid**
+with the diagnoser's per-base failure modes. Reject any mechanism that
+matches a listed avoid-pattern.
 """
 
     bandit_section = ""
@@ -365,44 +347,8 @@ from the clean source."""
 
 Before any other investigation, invoke the `diagnoser` subagent via
 the Task tool. It will explore traces and source, then write
-`diagnoser_report.json` at the workspace root. Read that report
-before designing this iteration's candidate. The subagent's full
-contract is in `.claude/agents/diagnoser.md`; you do not need to
-restate its instructions to it.
-
-The report is a hypothesis input, not ground truth. You may reject
-any direction it proposes, but record your reasoning in the
-candidate's `hypothesis` field if you do. If the report and the raw
-traces contradict each other, follow the traces and explain the
-discrepancy.
-"""
-    elif diagnoser_report_path is not None:
-        diagnoser_display = show(diagnoser_report_path)
-        diagnoser_section = f"""
-## Diagnoser Report (read first)
-
-A diagnoser subagent has already explored this iteration's traces and
-source snapshot and produced a structured failure-mode report at
-`{diagnoser_display}`. Read it before doing your own investigation; it
-exists to convert this iteration from an open-ended optimization step
-into a directed fix task.
-
-The report is a JSON object with these top-level fields:
-
-- `summary` — overall diagnosis (1–3 paragraphs).
-- `failure_modes[]` — each entry has `label`, `narrative`, `evidence`
-  (`kind` is `"trace"` or `"source"`, with workspace-relative `path`,
-  `lines`, `excerpt`, `comment`), `hypothesis`, and `directions` (each
-  with `summary`, `rationale`, `scope`, `risk`).
-- `context_observations[]` — additional facts the diagnoser flagged
-  that do not constitute standalone failure modes.
-- `open_questions[]` — items the diagnoser could not resolve; verify
-  any you depend on before committing to a direction.
-
-The report is a hypothesis input, not ground truth. You may reject any
-direction it proposes, but record your reasoning in the candidate's
-`hypothesis` field if you do. If the report and the raw traces
-contradict each other, follow the traces and explain the discrepancy.
+`diagnoser_report.md` at the workspace root. Read that report before
+designing this iteration's candidate.
 """
 
     # Legacy path concatenates the agent's role document and the
@@ -460,9 +406,7 @@ You are optimizing the {optimization_subject} for {benchmark_name}.
 - `{generated_display}/` — optional importable wrapper modules for this
   iteration.
 {trace_harness_section}
-Do not read global run directories, global `candidate_results`, repo-root
-`src/`, `references/vendor`, or {raw_data_policy}.
-{curai_section}
+{historian_section}
 
 ## Edit Scope
 
@@ -513,9 +457,12 @@ Iteration-specific note: {source_path_note}
 
 """
 
-    if diagnoser_via_subagent:
-        # Claude Code auto-loads <workspace>/CLAUDE.md as the system
-        # prompt, so the static role policies are already in context.
-        # Avoid duplicating them in the user message.
+    if subagent_mode or diagnoser_via_subagent:
+        # In subagent mode the role document is loaded as the subagent
+        # system prompt and <workspace>/CLAUDE.md provides the project
+        # constraints, so the user message must not duplicate them.
+        # ``diagnoser_via_subagent`` is kept as an alias for backward
+        # compatibility with call sites that signal subagent mode by
+        # gating on the diagnoser.
         return iteration_header
     return iteration_header + role_block

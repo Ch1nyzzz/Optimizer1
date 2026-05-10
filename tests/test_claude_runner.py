@@ -397,6 +397,70 @@ def test_claude_env_falls_back_to_deepseek_api_key(monkeypatch):
     assert env["ANTHROPIC_MODEL"] == "deepseek-v4-pro[1m]"
 
 
+def test_claude_env_native_auth_strips_anthropic_overrides(monkeypatch):
+    """In native-auth mode every Anthropic override must be removed.
+
+    The Claude Code CLI then falls back to ~/.claude/.credentials.json
+    instead of the DEEPSEEK_API_KEY -> ANTHROPIC_AUTH_TOKEN bridge.
+    """
+
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-stale")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-also-stale")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-pro[1m]")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+
+    env = _claude_env(base_url=None, auth_token=None, model="", native_auth=True)
+
+    assert "ANTHROPIC_AUTH_TOKEN" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "ANTHROPIC_BASE_URL" not in env
+    assert "ANTHROPIC_MODEL" not in env
+    # Telemetry / privacy flags must still be applied so non-essential
+    # traffic stays disabled even on the OAuth path.
+    assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
+
+
+def test_run_claude_prompt_native_auth_skips_anthropic_env(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "sk-stale")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.deepseek.com/anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "deepseek-v4-pro[1m]")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek")
+
+    captured: dict = {}
+
+    def fake_which(name):
+        return f"/bin/{name}" if name == "claude" else None
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs.get("env", {})
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("optimizer1.claude_runner.shutil.which", fake_which)
+    monkeypatch.setattr("optimizer1.claude_runner.subprocess.run", fake_run)
+
+    result = run_claude_prompt(
+        "prompt",
+        cwd=repo_dir,
+        log_dir=tmp_path / "logs",
+        name="iter_native",
+        model="",
+        native_auth=True,
+    )
+
+    assert result.returncode == 0
+    assert "--model" not in captured["command"]
+    env = captured["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "ANTHROPIC_BASE_URL" not in env
+    assert "ANTHROPIC_MODEL" not in env
+
+
 def test_run_code_agent_prompt_dispatches_to_claude(tmp_path, monkeypatch):
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()

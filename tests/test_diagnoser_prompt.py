@@ -1,14 +1,13 @@
-"""Tests for the diagnoser subagent prompt + report schema."""
+"""Tests for the diagnoser subagent prompt + report validator."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from optimizer1.diagnoser_prompt import (
+    FORBIDDEN_SECTIONS,
     REPORT_FILENAME,
-    REPORT_SCHEMA_EXAMPLE,
+    REQUIRED_SECTIONS,
     build_diagnoser_prompt,
     validate_report,
 )
@@ -44,7 +43,6 @@ def test_prompt_lists_run_context_and_iteration():
 def test_prompt_describes_curaii_base_when_provided():
     text = _build(current_base_iter=5)
     assert "iter_005` is the patch base" in text
-    # Source snapshot anchor still referenced.
     assert "source_snapshot/candidate/project_source/" in text
 
 
@@ -55,10 +53,6 @@ def test_prompt_describes_clean_base_when_no_curaii():
 
 def test_prompt_steers_to_mcp_tools_not_sqlite():
     text = _build()
-    # Trace harness section is included, but SQL/sqlite3 are explicitly
-    # discouraged in favor of the MCP tools registered on the
-    # container. The MCP-tool steering text lives in the static role
-    # markdown loaded from prompts/diagnoser_system.md.
     assert "Trace harness for this iteration" in text
     assert "MCP tools" in text
     assert "do not write SQL" in text
@@ -75,119 +69,138 @@ def test_prompt_advertises_report_path_relative_to_workspace():
         workspace_dir=Path("/tmp/ws"),
         report_path=Path("/tmp/ws") / REPORT_FILENAME,
     )
-    # Report path is rendered relative for unambiguous resolution.
     assert REPORT_FILENAME in text
-    assert "/tmp/ws/diagnoser_report.json" not in text
+    assert REPORT_FILENAME.endswith(".md")
+    assert "/tmp/ws/diagnoser_report.md" not in text  # relative, not absolute
+
+
+def test_prompt_advertises_markdown_report_not_json():
+    text = _build()
+    assert "diagnoser_report.md" in text
+    assert "diagnoser_report.json" not in text
 
 
 def test_prompt_uses_optimizer1_paths_not_memomemo():
     text = _build()
-    # Path examples must be optimizer1 — not the upstream memomemo
-    # template they were ported from.
     assert "src/optimizer1/" in text
     assert "src/memomemo/" not in text
+
+
+def test_prompt_role_contract_lists_required_sections():
+    text = _build()
+    for section in REQUIRED_SECTIONS:
+        assert section in text, f"role contract missing required section {section}"
+
+
+def test_prompt_role_contract_forbids_directions():
+    text = _build()
+    # Diagnoser must not propose directions; the role contract spells
+    # this out so the agent does not emit such a section.
+    assert "do not propose" in text.lower() or "must NOT" in text or "must not" in text
+    assert "proposer" in text
 
 
 # ---- validate_report ----------------------------------------------
 
 
-def _valid_report() -> dict:
-    return {
-        "summary": "we keep regressing on date-arithmetic queries.",
-        "failure_modes": [
-            {
-                "label": "date arithmetic regression",
-                "narrative": "trace shows the recall ranker drops the relevant date span.",
-                "evidence": [
-                    {
-                        "kind": "trace",
-                        "path": "traces/spans/iter_005/cand_a.jsonl",
-                        "lines": [12, 24],
-                        "excerpt": "...",
-                        "comment": "load-bearing",
-                    }
-                ],
-                "hypothesis": "the dedupe step collapses adjacent date spans.",
-                "directions": [
-                    {
-                        "summary": "preserve date spans during dedupe",
-                        "rationale": "keep evidence when key matches prior chunk",
-                        "scope": "memgpt_scaffold._dedupe_hits",
-                        "risk": "minor recall increase",
-                    }
-                ],
-            }
-        ],
-        "context_observations": [],
-        "open_questions": [],
-    }
+def _valid_report() -> str:
+    return """## Summary
+
+The recall pipeline is dropping date-anchored chunks during dedup, so
+date-arithmetic queries lose their bridging session.
+
+## Failure modes
+
+### date arithmetic regression
+
+**Narrative**
+
+Trace shows the recall ranker drops the relevant date span. The dedupe
+step in `memgpt_scaffold.py` collapses adjacent date spans before they
+reach the reranker.
+
+**Evidence**
+
+- `trace` `traces/spans/iter_005/cand_a.jsonl:12-24` — verbatim trace excerpt — load-bearing.
+- `source` `source_snapshot/candidate/project_source/src/optimizer1/scaffolds/memgpt_scaffold.py:120-145` — verbatim source excerpt — collapses the date span.
+
+**Hypothesis**
+
+The dedupe step's similarity threshold is too aggressive for spans
+that share calendar tokens. ~70% confident.
+
+## Context observations
+
+- The reranker only sees post-dedup chunks; any signal lost here is unrecoverable downstream.
+
+## Open questions
+
+- Is the dedupe threshold configurable, or hard-coded?
+"""
 
 
-def test_validate_report_accepts_well_formed_payload():
+def test_validate_report_accepts_well_formed_markdown():
     ok, err = validate_report(_valid_report())
     assert ok, err
     assert err == ""
 
 
-def test_validate_report_rejects_non_object():
-    ok, err = validate_report([])
+def test_validate_report_rejects_empty_input():
+    ok, err = validate_report("")
     assert not ok
-    assert "JSON object" in err
+    assert "empty" in err
 
 
-def test_validate_report_requires_summary():
-    payload = _valid_report()
-    payload["summary"] = ""
-    ok, err = validate_report(payload)
+def test_validate_report_rejects_non_string():
+    ok, err = validate_report(None)  # type: ignore[arg-type]
     assert not ok
-    assert "summary" in err
 
 
-def test_validate_report_requires_at_least_one_failure_mode():
-    payload = _valid_report()
-    payload["failure_modes"] = []
-    ok, err = validate_report(payload)
+def test_validate_report_requires_each_section():
+    for section in REQUIRED_SECTIONS:
+        broken = _valid_report().replace(section, "## OTHER")
+        ok, err = validate_report(broken)
+        assert not ok
+        assert section in err, f"validator did not flag missing {section}"
+
+
+def test_validate_report_requires_at_least_one_failure_mode_label():
+    # Strip the "### date arithmetic regression" sub-heading.
+    bad = _valid_report().replace("### date arithmetic regression\n", "")
+    ok, err = validate_report(bad)
     assert not ok
-    assert "failure_modes" in err
+    assert "labeled mode" in err or "###" in err
 
 
-def test_validate_report_requires_evidence_per_failure_mode():
-    payload = _valid_report()
-    payload["failure_modes"][0]["evidence"] = []
-    ok, err = validate_report(payload)
+def test_validate_report_rejects_forbidden_directions_section():
+    """The diagnoser must not propose fix directions. Adding such a
+    section should make the validator reject the report."""
+
+    bad = _valid_report() + (
+        "\n## Directions\n\n- preserve date spans during dedupe\n"
+    )
+    ok, err = validate_report(bad)
     assert not ok
-    assert "evidence" in err
+    assert "Directions" in err
+    assert "proposer" in err.lower()
 
 
-def test_validate_report_requires_known_evidence_kind():
-    payload = _valid_report()
-    payload["failure_modes"][0]["evidence"][0]["kind"] = "guess"
-    ok, err = validate_report(payload)
-    assert not ok
-    assert "kind" in err
+def test_validate_report_rejects_each_forbidden_section():
+    for forbidden in FORBIDDEN_SECTIONS:
+        bad = _valid_report() + f"\n{forbidden}\n\n- something.\n"
+        ok, err = validate_report(bad)
+        assert not ok, f"validator missed forbidden section {forbidden}"
+        # The section name (or its prefix when overlap exists) must
+        # appear in the error.
+        assert forbidden.split(" — ")[0] in err or forbidden.lstrip("# ").split()[0] in err
 
 
-def test_validate_report_requires_directions():
-    payload = _valid_report()
-    payload["failure_modes"][0]["directions"] = []
-    ok, err = validate_report(payload)
-    assert not ok
-    assert "directions" in err
+def test_required_and_forbidden_sections_do_not_overlap():
+    assert set(REQUIRED_SECTIONS).isdisjoint(set(FORBIDDEN_SECTIONS))
 
 
-def test_validate_report_tolerates_extra_keys():
-    payload = _valid_report()
-    payload["extra_key"] = "ignored"
-    ok, err = validate_report(payload)
-    assert ok, err
+def test_report_filename_is_markdown_not_json():
+    """Hard-switch verification: filename suffix is .md."""
 
-
-def test_schema_example_is_itself_invalid_placeholder():
-    """The example is documentation, not a passing fixture — its
-    `evidence.path` placeholders are valid strings, so this just
-    sanity-checks that calling the validator on the example does not
-    blow up."""
-
-    ok, err = validate_report(REPORT_SCHEMA_EXAMPLE)
-    # Example is well-formed enough to pass.
-    assert ok, err
+    assert REPORT_FILENAME.endswith(".md")
+    assert REPORT_FILENAME == "diagnoser_report.md"

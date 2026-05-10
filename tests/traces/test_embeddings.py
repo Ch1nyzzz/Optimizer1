@@ -148,24 +148,12 @@ def _candidate(tmp_path: Path, *, candidate_id: str = "cand_x") -> CandidateResu
     )
 
 
-class _FixedEmbedder:
-    """Deterministic 'embedder' for harness integration tests."""
+def test_harness_records_diff_text_in_iteration_diffs(tmp_path):
+    """Harness always persists raw diff_text to iteration_diffs after
+    each iteration. Embedding is the MCP layer's job, not the
+    harness's — the diff_embeddings table stays empty until
+    trace_similar runs."""
 
-    def __init__(self):
-        self.model = "stub-model"
-        self.calls: list[str] = []
-
-    def embed(self, text: str) -> DiffEmbedding | None:
-        self.calls.append(text)
-        return DiffEmbedding(
-            model=self.model,
-            dim=4,
-            diff_text=text,
-            vector=(0.1, 0.2, 0.3, 0.4),
-        )
-
-
-def test_harness_records_diff_embedding(tmp_path):
     candidate = _candidate(tmp_path)
     diff_path = tmp_path / "proposer_calls" / "iter_001" / "diff.patch"
     diff_path.parent.mkdir(parents=True)
@@ -173,41 +161,35 @@ def test_harness_records_diff_embedding(tmp_path):
         "diff --git a/x.py b/x.py\n+ change\n", encoding="utf-8"
     )
 
-    embedder = _FixedEmbedder()
-    harness = TraceHarness(
-        run_dir=tmp_path,
-        benchmark="longmemeval",
-        diff_embedder=embedder,  # type: ignore[arg-type]
-    )
-
-    # iter_0 baseline first (no embedding because diff file absent).
-    iter0 = _candidate(tmp_path, candidate_id="seed")
-    harness.record_iteration(iteration=0, candidates=[iter0])
-    # iter_1 should embed.
-    harness.record_iteration(iteration=1, candidates=[candidate])
-
-    assert embedder.calls == ["diff --git a/x.py b/x.py\n+ change\n"]
-    with sqlite3.connect(tmp_path / "traces" / "index.db") as conn:
-        row = conn.execute(
-            "SELECT iteration, model, dim, diff_text FROM diff_embeddings"
-        ).fetchone()
-    assert row[0] == 1
-    assert row[1] == "stub-model"
-    assert row[2] == 4
-    assert row[3].startswith("diff --git")
-
-
-def test_harness_skips_embedding_when_no_embedder(tmp_path):
-    candidate = _candidate(tmp_path)
-    diff_path = tmp_path / "proposer_calls" / "iter_001" / "diff.patch"
-    diff_path.parent.mkdir(parents=True)
-    diff_path.write_text("diff --git a/x.py b/x.py\n", encoding="utf-8")
-
     harness = TraceHarness(run_dir=tmp_path, benchmark="longmemeval")
     iter0 = _candidate(tmp_path, candidate_id="seed")
     harness.record_iteration(iteration=0, candidates=[iter0])
     harness.record_iteration(iteration=1, candidates=[candidate])
 
     with sqlite3.connect(tmp_path / "traces" / "index.db") as conn:
-        rows = conn.execute("SELECT COUNT(*) FROM diff_embeddings").fetchone()
+        diffs = conn.execute(
+            "SELECT iteration, diff_text FROM iteration_diffs ORDER BY iteration"
+        ).fetchall()
+        embeddings = conn.execute(
+            "SELECT COUNT(*) FROM diff_embeddings"
+        ).fetchone()
+    # Only iter 1 has a diff.patch (iter 0's directory has none); diff
+    # text is captured verbatim.
+    assert len(diffs) == 1
+    assert diffs[0][0] == 1
+    assert diffs[0][1].startswith("diff --git")
+    # Embeddings table is empty — no optimizer-level embedder runs anymore.
+    assert embeddings[0] == 0
+
+
+def test_harness_skips_iteration_diffs_when_no_diff_file(tmp_path):
+    """Iters with no diff.patch (e.g. baseline iter_0) leave iteration_diffs
+    untouched."""
+
+    iter0 = _candidate(tmp_path, candidate_id="seed")
+    harness = TraceHarness(run_dir=tmp_path, benchmark="longmemeval")
+    harness.record_iteration(iteration=0, candidates=[iter0])
+
+    with sqlite3.connect(tmp_path / "traces" / "index.db") as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM iteration_diffs").fetchone()
     assert rows[0] == 0

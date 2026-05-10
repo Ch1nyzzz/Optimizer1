@@ -325,3 +325,79 @@ def test_harness_with_external_baseline_classifies_diffs(tmp_path):
 
     by_task = {row["task_id"]: row["status"] for row in rows}
     assert by_task == {"t1": "regressed", "t2": "breakthrough"}
+
+
+def test_record_iteration_writes_iteration_meta_with_policy_kwargs(tmp_path):
+    import sqlite3
+
+    candidate = _write_candidate_result(
+        tmp_path=tmp_path,
+        candidate_id="cand_a",
+        tasks=_make_tasks(4),
+    )
+    call_dir = str(tmp_path / "proposer_calls" / "iter_002")
+
+    harness = TraceHarness(run_dir=tmp_path, benchmark="longmemeval")
+    harness.record_iteration(
+        iteration=2,
+        candidates=[candidate],
+        patch_base=1,
+        budget="high",
+        selection_policy="pareto",
+        proposer_call_dir=call_dir,
+    )
+
+    with sqlite3.connect(tmp_path / "traces" / "index.db") as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM iteration_meta WHERE iteration = 2"
+        ).fetchone()
+
+    assert row is not None
+    assert row["patch_base"] == 1
+    assert row["budget"] == "high"
+    assert row["selection_policy"] == "pareto"
+    assert row["passrate"] is not None
+    assert row["mean_score"] is not None
+    assert row["proposer_call_dir"] == call_dir
+    # advanced_frontier / on_pareto_frontier are not set by record_iteration;
+    # the optimizer fills those in via separate upsert / refresh calls.
+    assert row["advanced_frontier"] is None
+    assert row["on_pareto_frontier"] is None
+
+
+def test_record_iteration_picks_highest_passrate_candidate_for_meta_scores(tmp_path):
+    """When an iter has multiple candidates, the iteration_meta row's
+    passrate / mean_score reflect the headline (highest-passrate)
+    candidate — matches the frontier rule."""
+
+    import sqlite3
+
+    weak = _write_candidate_result(
+        tmp_path=tmp_path,
+        candidate_id="cand_weak",
+        tasks=[
+            {"task_id": "t1", "passed": False, "score": 0.0},
+            {"task_id": "t2", "passed": False, "score": 0.0},
+        ],
+    )
+    strong = _write_candidate_result(
+        tmp_path=tmp_path,
+        candidate_id="cand_strong",
+        tasks=[
+            {"task_id": "t1", "passed": True, "score": 1.0},
+            {"task_id": "t2", "passed": True, "score": 0.8},
+        ],
+    )
+    harness = TraceHarness(run_dir=tmp_path, benchmark="longmemeval")
+    harness.record_iteration(iteration=4, candidates=[weak, strong])
+
+    with sqlite3.connect(tmp_path / "traces" / "index.db") as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT passrate, mean_score FROM iteration_meta WHERE iteration = 4"
+        ).fetchone()
+
+    # strong's passrate = 1.0, average_score = 0.9. weak's are 0.0 / 0.0.
+    assert row["passrate"] == 1.0
+    assert row["mean_score"] == 0.9

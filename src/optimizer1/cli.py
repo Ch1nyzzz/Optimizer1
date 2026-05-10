@@ -238,17 +238,22 @@ def main() -> int:
     )
     optimize.add_argument(
         "--claude-model",
-        default="deepseek-v4-pro[1m]",
+        default=None,
         help=(
             "Model name for Claude Code proposer (sets ANTHROPIC_MODEL). "
-            "Default 'deepseek-v4-pro[1m]' targets DeepSeek's anthropic-compat "
-            "endpoint with the 1M context tier."
+            "Defaults to 'deepseek-v4-pro[1m]' (DeepSeek anthropic-compat "
+            "endpoint, 1M context tier). With --claude-native-auth the "
+            "default becomes empty so claude CLI picks its own model."
         ),
     )
     optimize.add_argument(
         "--claude-base-url",
-        default="https://api.deepseek.com/anthropic",
-        help="ANTHROPIC_BASE_URL for Claude Code proposer.",
+        default=None,
+        help=(
+            "ANTHROPIC_BASE_URL for Claude Code proposer. Defaults to the "
+            "DeepSeek anthropic-compat endpoint. Ignored when "
+            "--claude-native-auth is set."
+        ),
     )
     optimize.add_argument(
         "--claude-auth-token",
@@ -257,6 +262,19 @@ def main() -> int:
             "ANTHROPIC_AUTH_TOKEN for Claude Code proposer. If unset, falls "
             "back to DEEPSEEK_API_KEY env var, then ANTHROPIC_AUTH_TOKEN, "
             "then ANTHROPIC_API_KEY."
+        ),
+    )
+    optimize.add_argument(
+        "--claude-native-auth",
+        action="store_true",
+        help=(
+            "Use the Claude Code subscription OAuth login from "
+            "~/.claude/.credentials.json. When set, ANTHROPIC_BASE_URL, "
+            "ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, and ANTHROPIC_MODEL "
+            "are stripped from the proposer's environment so the underlying "
+            "claude CLI uses its own credentials. --claude-base-url / "
+            "--claude-auth-token are ignored, and --claude-model defaults "
+            "to empty (no --model flag passed) unless explicitly provided."
         ),
     )
     optimize.add_argument("--propose-timeout-s", type=int, default=2400)
@@ -284,6 +302,7 @@ def main() -> int:
             "best",
             "curai",
             "curaii",
+            "pareto",
         ),
         default="default",
         help=(
@@ -291,10 +310,14 @@ def main() -> int:
             "context loading, online bandit context selection, one of the "
             "fixed 3-iteration file-access baselines (random / recent / best), "
             "curai (= progressive plus a Stagnation Forensics prompt block "
-            "when the schedule escalates to high budget), or curaii "
+            "when the schedule escalates to high budget), curaii "
             "(= curai with the patch base resampled each iter from the top-3 "
             "previous candidates by passrate so successful mechanisms can "
-            "compound rather than restarting from baseline every iter)."
+            "compound rather than restarting from baseline every iter), or "
+            "pareto (= default's fixed-high context every iter, but the "
+            "patch base is resampled uniformly from the current "
+            "passrate x token_consuming Pareto frontier — same iter budget "
+            "as default, the only divergence is the base)."
         ),
     )
     optimize.add_argument(
@@ -441,33 +464,13 @@ def main() -> int:
         ),
     )
     optimize.add_argument(
-        "--diff-embedding-model",
-        default=None,
-        help=(
-            "Embedding model name (e.g. text-embedding-3-small). When set, "
-            "each iteration's diff.patch is embedded after recording and "
-            "stored in traces/index.db for the trace_similar MCP tool. "
-            "If unset, embedding generation is skipped."
-        ),
-    )
-    optimize.add_argument(
-        "--diff-embedding-base-url",
-        default=None,
-        help="OpenAI-compatible base URL for the embedding model (optional).",
-    )
-    optimize.add_argument(
-        "--diff-embedding-api-key",
-        default=None,
-        help="API key for the embedding model (optional).",
-    )
-    optimize.add_argument(
         "--diagnose",
         action="store_true",
         help=(
             "Run a diagnoser subagent in the proposer container before "
             "each proposer step. The diagnoser explores traces and the "
             "source snapshot and writes a structured failure-mode report "
-            "(diagnoser_report.json); the proposer reads it as hypothesis "
+            "(diagnoser_report.md); the proposer reads it as hypothesis "
             "input. Reports are cached per (base_iter, reference_iters) "
             "within the run so identical lineage states do not re-diagnose."
         ),
@@ -619,6 +622,13 @@ def main() -> int:
         selected_spec = task_spec(selected_task)
         run_id = args.run_id or selected_spec.default_run_id
         out_dir = args.out or Path("runs") / run_id
+        resolved_claude_model, resolved_claude_base_url = _resolve_claude_overrides(
+            claude_model=args.claude_model,
+            claude_base_url=args.claude_base_url,
+            native_auth=args.claude_native_auth,
+        )
+        args.claude_model = resolved_claude_model
+        args.claude_base_url = resolved_claude_base_url
         if selected_task == "longmemeval":
             selected_scaffolds = (
                 _csv(args.scaffolds)
@@ -650,6 +660,7 @@ def main() -> int:
                     claude_model=args.claude_model,
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
+                    claude_native_auth=args.claude_native_auth,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -676,9 +687,6 @@ def main() -> int:
                     test_limit=args.test_frontier_limit,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                    diff_embedding_model=args.diff_embedding_model,
-                    diff_embedding_base_url=args.diff_embedding_base_url,
-                    diff_embedding_api_key=args.diff_embedding_api_key,
                     diagnose=args.diagnose,
                 )
             )
@@ -706,6 +714,7 @@ def main() -> int:
                     claude_model=args.claude_model,
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
+                    claude_native_auth=args.claude_native_auth,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -729,9 +738,6 @@ def main() -> int:
                     force=args.force,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                    diff_embedding_model=args.diff_embedding_model,
-                    diff_embedding_base_url=args.diff_embedding_base_url,
-                    diff_embedding_api_key=args.diff_embedding_api_key,
                     diagnose=args.diagnose,
                 )
             )
@@ -760,6 +766,7 @@ def main() -> int:
                 claude_model=args.claude_model,
                 claude_base_url=args.claude_base_url,
                 claude_auth_token=args.claude_auth_token,
+                claude_native_auth=args.claude_native_auth,
                 propose_timeout_s=args.propose_timeout_s,
                 dry_run=args.dry_run,
                 max_context_chars=args.max_context_chars,
@@ -786,9 +793,6 @@ def main() -> int:
                 test_limit=args.test_frontier_limit,
                 trace_baseline_path=args.trace_baseline,
                 proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                diff_embedding_model=args.diff_embedding_model,
-                diff_embedding_base_url=args.diff_embedding_base_url,
-                diff_embedding_api_key=args.diff_embedding_api_key,
                 diagnose=args.diagnose,
             )
         )
@@ -845,6 +849,33 @@ def _scaffold_extra(value: str | None) -> dict[str, dict[str, object]]:
             raise ValueError(f"extra config for {name!r} must be a JSON object")
         out[str(name)] = dict(extra)
     return out
+
+
+def _resolve_claude_overrides(
+    *,
+    claude_model: str | None,
+    claude_base_url: str | None,
+    native_auth: bool,
+) -> tuple[str, str]:
+    """Pick the right defaults for ``--claude-model`` / ``--claude-base-url``.
+
+    Argparse stores ``None`` when the user did not pass either flag. We
+    fall back to the DeepSeek anthropic-compat tier in legacy mode and
+    to empty strings under ``--claude-native-auth`` so the OAuth login
+    is not poisoned with a DeepSeek model name or base URL.
+    """
+
+    if native_auth:
+        resolved_model = claude_model if claude_model is not None else ""
+        resolved_base = claude_base_url if claude_base_url is not None else ""
+        return resolved_model, resolved_base
+    resolved_model = claude_model if claude_model is not None else "deepseek-v4-pro[1m]"
+    resolved_base = (
+        claude_base_url
+        if claude_base_url is not None
+        else "https://api.deepseek.com/anthropic"
+    )
+    return resolved_model, resolved_base
 
 
 def _optimize_task(args: argparse.Namespace) -> str:

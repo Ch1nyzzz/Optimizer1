@@ -203,6 +203,7 @@ def run_code_agent_prompt(
     claude_base_url: str | None = None,
     claude_auth_token: str | None = None,
     claude_agent_name: str | None = None,
+    claude_native_auth: bool = False,
 ) -> ClaudeResult:
     """Run the Claude Code proposer.
 
@@ -210,6 +211,12 @@ def run_code_agent_prompt(
     forwarded to ``claude --agent <name>`` so the main session runs as
     the named ``.claude/agents/<name>.md`` subagent (its frontmatter
     supplies the system prompt and tool allowlist).
+
+    ``claude_native_auth=True`` selects the Claude Code subscription
+    OAuth login path: ``ANTHROPIC_BASE_URL`` / ``ANTHROPIC_AUTH_TOKEN``
+    / ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_MODEL`` are stripped from the
+    forwarded environment and never re-set, so the underlying ``claude``
+    CLI uses ``~/.claude/.credentials.json`` and its own default model.
     """
 
     normalized = agent.strip().lower()
@@ -228,6 +235,7 @@ def run_code_agent_prompt(
         base_url=claude_base_url,
         auth_token=claude_auth_token,
         agent_name=claude_agent_name,
+        native_auth=claude_native_auth,
     )
 
 
@@ -243,6 +251,7 @@ def run_claude_prompt(
     base_url: str | None = None,
     auth_token: str | None = None,
     agent_name: str | None = None,
+    native_auth: bool = False,
 ) -> ClaudeResult:
     """Run ``claude -p`` non-interactively and persist logs.
 
@@ -255,6 +264,14 @@ def run_claude_prompt(
     subagent. Its frontmatter supplies the system prompt and the
     tool allowlist; the role / identity text never enters the user
     message.
+
+    When ``native_auth=True``, the Claude Code subscription OAuth path
+    is used. Any ``ANTHROPIC_BASE_URL`` / ``ANTHROPIC_AUTH_TOKEN`` /
+    ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_MODEL`` already set in the
+    environment (including ``DEEPSEEK_API_KEY`` -> ``ANTHROPIC_AUTH_TOKEN``
+    fallbacks) are removed from the forwarded env and never re-set. The
+    ``claude`` CLI then reads its credentials from
+    ``~/.claude/.credentials.json``.
     """
 
     cwd = cwd.resolve(strict=False)
@@ -302,6 +319,7 @@ def run_claude_prompt(
         base_url=base_url,
         auth_token=auth_token,
         model=model,
+        native_auth=native_auth,
     )
 
     try:
@@ -386,8 +404,25 @@ def _claude_env(
     base_url: str | None,
     auth_token: str | None,
     model: str,
+    native_auth: bool = False,
 ) -> dict[str, str]:
     env: dict[str, str] = dict(os.environ)
+    if native_auth:
+        # Strip every Anthropic override so the `claude` CLI falls back
+        # to its own OAuth credentials in ~/.claude/.credentials.json.
+        # In particular, drop ANTHROPIC_AUTH_TOKEN even if a project
+        # .env has loaded DEEPSEEK_API_KEY into the process environment.
+        for stale_key in (
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_MODEL",
+        ):
+            env.pop(stale_key, None)
+        for key, value in _CLAUDE_THIRD_PARTY_ENV.items():
+            env[key] = value
+        return env
+
     resolved_base = (base_url or env.get("ANTHROPIC_BASE_URL") or DEFAULT_CLAUDE_BASE_URL).strip()
     env["ANTHROPIC_BASE_URL"] = resolved_base
     resolved_token = (

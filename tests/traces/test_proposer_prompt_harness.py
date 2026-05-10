@@ -70,38 +70,24 @@ def test_prompt_uses_relative_path_when_under_run_dir():
     assert "`traces/manifest.json`" in text
 
 
-def test_prompt_omits_diagnoser_section_when_report_path_is_none():
+def test_prompt_omits_diagnoser_section_when_subagent_flag_unset():
     text = _build()
-    # The dynamic "Diagnoser Report (read first)" header must not be
-    # emitted when no report path is supplied. The role policies (in
-    # the appended CLAUDE.md / role.md content) may mention the file
-    # name when describing what the diagnoser would produce, so we
-    # test for the dynamic-section header instead of the bare path.
-    assert "Diagnoser Report (read first)" not in text
+    # The dynamic "Diagnoser subagent (call first)" header must not be
+    # emitted when --diagnose is off. The role policies (in the appended
+    # CLAUDE.md / role.md content) may mention the file name when
+    # describing what the diagnoser would produce, so we test for the
+    # dynamic-section header instead of the bare path.
     assert "Diagnoser subagent (call first)" not in text
-
-
-def test_prompt_includes_diagnoser_section_when_report_path_provided():
-    text = _build(diagnoser_report_path=Path("/tmp/r/diagnoser_report.json"))
-    assert "Diagnoser Report (read first)" in text
-    # Path is shown relative to run_dir.
-    assert "`diagnoser_report.json`" in text
-    assert "/tmp/r/diagnoser_report.json" not in text
-    # Report schema fields are described so the proposer knows what to
-    # consume.
-    assert "failure_modes" in text
-    assert "open_questions" in text
 
 
 def test_prompt_uses_subagent_trigger_when_via_subagent_flag_set():
     """Claude proposer + diagnose runs the diagnoser as a Task-tool
-    subagent. The prompt must instruct that explicitly *and* must not
-    advertise a pre-written report path (none exists yet)."""
+    subagent. The prompt must instruct that explicitly."""
 
     text = _build(diagnoser_via_subagent=True)
     assert "Diagnoser subagent (call first)" in text
     assert "via\nthe Task tool" in text or "via the Task tool" in text
-    assert ".claude/agents/diagnoser.md" in text
+    assert "diagnoser_report.md" in text
     # No pre-written report path in this mode.
     assert "Diagnoser Report (read first)" not in text
 

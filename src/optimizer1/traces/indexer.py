@@ -72,13 +72,29 @@ CREATE TABLE IF NOT EXISTS file_modifications (
 
 CREATE INDEX IF NOT EXISTS ix_file_mods_path ON file_modifications(path);
 
+CREATE TABLE IF NOT EXISTS iteration_diffs (
+    iteration  INTEGER PRIMARY KEY,
+    diff_text  TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS diff_embeddings (
     iteration  INTEGER NOT NULL,
     model      TEXT    NOT NULL,
     dim        INTEGER NOT NULL,
-    diff_text  TEXT    NOT NULL,
     embedding  BLOB    NOT NULL,
-    PRIMARY KEY (iteration)
+    PRIMARY KEY (iteration, model)
+);
+
+CREATE TABLE IF NOT EXISTS iteration_meta (
+    iteration          INTEGER PRIMARY KEY,
+    patch_base         INTEGER,
+    budget             TEXT,
+    selection_policy   TEXT,
+    advanced_frontier  INTEGER,
+    on_pareto_frontier INTEGER,
+    passrate           REAL,
+    mean_score         REAL,
+    proposer_call_dir  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS manifest (
@@ -219,24 +235,122 @@ class Indexer:
                     [(iteration, p) for p in normalized],
                 )
 
+    def record_diff_text(self, *, iteration: int, diff_text: str) -> None:
+        """Insert or replace the raw diff text for one iteration.
+
+        Called by the harness after each evaluation. Embedding is a
+        separate concern handled lazily by the MCP layer; storing the
+        text unconditionally lets ``trace_similar`` re-embed any
+        history at call time without optimizer-level setup.
+        """
+
+        if not diff_text or not diff_text.strip():
+            return
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO iteration_diffs(iteration, diff_text) "
+                "VALUES (?, ?)",
+                (int(iteration), diff_text),
+            )
+
     def record_diff_embedding(
         self,
         *,
         iteration: int,
         model: str,
         dim: int,
-        diff_text: str,
         embedding: bytes,
     ) -> None:
-        """Insert or replace the diff embedding for one iteration."""
+        """Insert or replace one (iteration, model) embedding row.
+
+        Called by the MCP ``trace_similar`` tool when it lazily embeds
+        a diff that has no cached vector for the active model.
+        """
 
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO diff_embeddings("
-                "iteration, model, dim, diff_text, embedding) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (iteration, model, int(dim), diff_text, embedding),
+                "iteration, model, dim, embedding) "
+                "VALUES (?, ?, ?, ?)",
+                (int(iteration), model, int(dim), embedding),
             )
+
+    def upsert_iteration_meta(
+        self,
+        *,
+        iteration: int,
+        patch_base: int | None = None,
+        budget: str | None = None,
+        selection_policy: str | None = None,
+        advanced_frontier: bool | None = None,
+        on_pareto_frontier: bool | None = None,
+        passrate: float | None = None,
+        mean_score: float | None = None,
+        proposer_call_dir: str | None = None,
+    ) -> None:
+        """Insert or update the iteration_meta row for one iteration.
+
+        Fields passed as ``None`` preserve the existing value (via
+        ``COALESCE`` on conflict). Use a non-``None`` sentinel to set a
+        field; passing ``None`` does not clear it.
+        """
+
+        adv = None if advanced_frontier is None else (1 if advanced_frontier else 0)
+        on_fr = None if on_pareto_frontier is None else (1 if on_pareto_frontier else 0)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO iteration_meta (
+                    iteration, patch_base, budget, selection_policy,
+                    advanced_frontier, on_pareto_frontier,
+                    passrate, mean_score, proposer_call_dir
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(iteration) DO UPDATE SET
+                    patch_base         = COALESCE(excluded.patch_base,         iteration_meta.patch_base),
+                    budget             = COALESCE(excluded.budget,             iteration_meta.budget),
+                    selection_policy   = COALESCE(excluded.selection_policy,   iteration_meta.selection_policy),
+                    advanced_frontier  = COALESCE(excluded.advanced_frontier,  iteration_meta.advanced_frontier),
+                    on_pareto_frontier = COALESCE(excluded.on_pareto_frontier, iteration_meta.on_pareto_frontier),
+                    passrate           = COALESCE(excluded.passrate,           iteration_meta.passrate),
+                    mean_score         = COALESCE(excluded.mean_score,         iteration_meta.mean_score),
+                    proposer_call_dir  = COALESCE(excluded.proposer_call_dir,  iteration_meta.proposer_call_dir)
+                """,
+                (
+                    int(iteration),
+                    None if patch_base is None else int(patch_base),
+                    budget,
+                    selection_policy,
+                    adv,
+                    on_fr,
+                    None if passrate is None else float(passrate),
+                    None if mean_score is None else float(mean_score),
+                    proposer_call_dir,
+                ),
+            )
+
+    def refresh_pareto_frontier(self, iter_to_on_frontier: dict[int, bool]) -> None:
+        """Bulk-update ``on_pareto_frontier`` for every known iteration.
+
+        ``iter_to_on_frontier`` maps iteration → bool. Iterations not
+        present in the map are explicitly set to ``0`` (off-frontier),
+        so callers should pass the full picture each time the frontier
+        is recomputed. Iterations missing from ``iteration_meta`` get
+        a row inserted with the flag set; other fields stay ``NULL``.
+        """
+
+        with self._connect() as conn:
+            conn.execute("UPDATE iteration_meta SET on_pareto_frontier = 0")
+            for iteration, on_frontier in iter_to_on_frontier.items():
+                flag = 1 if on_frontier else 0
+                conn.execute(
+                    """
+                    INSERT INTO iteration_meta (iteration, on_pareto_frontier)
+                    VALUES (?, ?)
+                    ON CONFLICT(iteration) DO UPDATE SET
+                        on_pareto_frontier = excluded.on_pareto_frontier
+                    """,
+                    (int(iteration), flag),
+                )
 
     # ---- internals -----------------------------------------------
 

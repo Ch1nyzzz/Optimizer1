@@ -189,7 +189,6 @@ def test_miniswe_prompt_uses_coding_agent_schema_and_focus():
         split="train",
         limit=30,
         benchmark_name="SWE-bench coding-agent issue resolution",
-        raw_data_policy="SWE-bench gold patches, test patches, and evaluation results",
     )
 
     assert "optimizing the source-backed coding agent control loop" in prompt
@@ -206,11 +205,14 @@ def test_miniswe_prompt_uses_coding_agent_schema_and_focus():
         '"source_project_path": "source_snapshot/candidate/upstream_source/mini-swe-agent"'
         in prompt
     )
-    assert "SWE-bench gold patches, test patches, and evaluation results" in prompt
     assert "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT" in prompt
 
 
-def test_curai_prompt_appends_stagnation_forensics_only_at_high_budget():
+def test_stagnation_prompt_invokes_historian_when_streak_active():
+    """When stagnation_active=True, the prompt must steer the proposer
+    to invoke the historian subagent. When inactive, no stagnation
+    section should appear."""
+
     common = {
         "run_id": "r",
         "iteration": 8,
@@ -227,36 +229,39 @@ def test_curai_prompt_appends_stagnation_forensics_only_at_high_budget():
         "optimization_directions": (),
         "split": "train",
         "limit": 0,
-        "selection_policy": "curai",
+        "selection_policy": "pareto",
+        "budget": "high",
     }
 
-    high_prompt = build_progressive_proposer_prompt(
+    stalled_prompt = build_progressive_proposer_prompt(
         **common,
-        budget="high",
-        curai_active=True,
-        curai_stagnation_count=3,
+        stagnation_active=True,
+        stagnation_count=3,
+        historian_via_subagent=True,
     )
-    assert "Stagnation Forensics (CuraI mode)" in high_prompt
-    assert "Initial Diagnosis" in high_prompt
-    assert "stalled for 3 consecutive iterations" in high_prompt
-    assert "Phase 1 — Diagnose" in high_prompt
-    assert "Phase 2 — Decide" in high_prompt
-    assert "stagnation_analysis" in high_prompt
-    assert "diff_digest.md" in high_prompt
-    assert "reference_iterations/iter_NNN/" in high_prompt
-    # Initial-diagnosis branch must instruct the proposer to write stagnation.md
-    assert "write a `stagnation.md` file" in high_prompt
-    assert "Working hypothesis" in high_prompt
+    # Section heading mentions the historian and the streak length.
+    assert "Historian subagent" in stalled_prompt
+    assert "stalled for 3 iters" in stalled_prompt
+    assert "stalled for 3 consecutive iterations" in stalled_prompt
+    # Steer to Task tool invocation and the historian's report file.
+    assert "Task tool" in stalled_prompt
+    assert "historian_report.md" in stalled_prompt
+    # Combining historian's avoid list with diagnoser's failure modes is the proposer's job.
+    assert "Directions to avoid" in stalled_prompt
+    assert "diagnoser" in stalled_prompt
+    # The legacy Stagnation Forensics block must not be re-emitted.
+    assert "Stagnation Forensics (CuraI mode)" not in stalled_prompt
+    assert "Initial Diagnosis" not in stalled_prompt
+    assert "stagnation.md" not in stalled_prompt
 
-    medium_prompt = build_progressive_proposer_prompt(
-        **common,
-        budget="medium",
-        curai_active=False,
-        curai_stagnation_count=0,
+    not_stalled = build_progressive_proposer_prompt(
+        **{**common, "budget": "medium"},
+        stagnation_active=False,
+        stagnation_count=0,
     )
-    assert "Stagnation Forensics" not in medium_prompt
-    assert "stagnation_analysis" not in medium_prompt
-    assert "stagnation.md" not in medium_prompt
+    assert "Historian subagent" not in not_stalled
+    assert "Stagnation context" not in not_stalled
+    assert "historian_report.md" not in not_stalled
 
 
 def test_curaii_prompt_announces_patch_base_iter():
@@ -305,7 +310,10 @@ def test_curaii_prompt_announces_patch_base_iter():
     assert "Every iteration starts from the clean source snapshot" in no_base_prompt
 
 
-def test_curai_prompt_anchors_stalled_to_current_frontier_best():
+def test_stagnation_prompt_anchors_streak_to_current_frontier_best():
+    """Stagnation section announces the historical best the candidate
+    must beat to advance."""
+
     common = {
         "run_id": "r",
         "iteration": 18,
@@ -322,44 +330,32 @@ def test_curai_prompt_anchors_stalled_to_current_frontier_best():
         "optimization_directions": (),
         "split": "train",
         "limit": 0,
-        "selection_policy": "curai",
+        "selection_policy": "pareto",
         "budget": "high",
-        "curai_active": True,
-        "curai_stagnation_count": 5,
+        "stagnation_active": True,
+        "stagnation_count": 5,
+        "historian_via_subagent": True,
     }
 
-    initial_anchored = build_progressive_proposer_prompt(
+    anchored = build_progressive_proposer_prompt(
         **common,
         current_frontier_passrate=0.4125,
-        current_frontier_average_score=0.5453,
         current_frontier_best_iter=2,
     )
-    assert "stalled for 5 consecutive iterations against the current Pareto frontier" in initial_anchored
-    assert "best passrate 0.4125" in initial_anchored
-    assert "average_score 0.5453" in initial_anchored
-    assert "from iter_002" in initial_anchored
-    assert "passrate ≥ 0.4125" in initial_anchored
-    assert "expand average_score on the frontier" in initial_anchored
-
-    incremental_anchored = build_progressive_proposer_prompt(
-        **common,
-        curai_stagnation_doc_exists=True,
-        current_frontier_passrate=0.4750,
-        current_frontier_average_score=0.5971,
-        current_frontier_best_iter=30,
-    )
-    assert "Incremental Update" in incremental_anchored
-    assert "stalled for 5 consecutive iterations against the current Pareto frontier" in incremental_anchored
-    assert "best passrate 0.4750" in incremental_anchored
-    assert "from iter_030" in incremental_anchored
-    assert "passrate ≥ 0.4750" in incremental_anchored
+    assert "stalled for 5 consecutive iterations against the current frontier-best passrate" in anchored
+    assert "0.4125" in anchored
+    assert "iter_002" in anchored
+    assert "strictly exceed" in anchored
 
     fallback = build_progressive_proposer_prompt(**common)
     assert "stalled for 5 consecutive iterations" in fallback
-    assert "against the current Pareto frontier" not in fallback
+    assert "frontier-best" not in fallback
 
 
-def test_curai_prompt_switches_to_incremental_update_when_stagnation_doc_exists():
+def test_stagnation_prompt_switches_to_incremental_when_historian_report_exists():
+    """When historian_report_exists=True, the prompt should signal an
+    incremental update rather than initial diagnosis."""
+
     common = {
         "run_id": "r",
         "iteration": 12,
@@ -376,27 +372,24 @@ def test_curai_prompt_switches_to_incremental_update_when_stagnation_doc_exists(
         "optimization_directions": (),
         "split": "train",
         "limit": 0,
-        "selection_policy": "curai",
+        "selection_policy": "pareto",
+        "budget": "high",
     }
 
     incremental_prompt = build_progressive_proposer_prompt(
         **common,
-        budget="high",
-        curai_active=True,
-        curai_stagnation_count=7,
-        curai_stagnation_doc_exists=True,
+        stagnation_active=True,
+        stagnation_count=7,
+        historian_report_exists=True,
+        historian_via_subagent=True,
     )
-    assert "Incremental Update" in incremental_prompt
+    assert "incrementally update" in incremental_prompt
+    assert "previous `historian_report.md`" in incremental_prompt
+    assert "already at the workspace root" in incremental_prompt
+    # Legacy stagnation.md path must not appear.
+    assert "stagnation.md" not in incremental_prompt
     assert "Initial Diagnosis" not in incremental_prompt
-    # Must tell the proposer to read the existing stagnation.md, not redo full scan
-    assert "Read `stagnation.md` first" in incremental_prompt
-    assert "do NOT redo the full historical diagnosis" in incremental_prompt
-    assert "Update `stagnation.md` in place" in incremental_prompt
-    # Phase labels still present so downstream tooling can locate the workflow
-    assert "Phase 1 — Diagnose" in incremental_prompt
-    assert "Phase 2 — Decide" in incremental_prompt
-    # Should NOT include the markdown skeleton (that is only for the initial-diagnosis case)
-    assert "write a `stagnation.md` file" not in incremental_prompt
+    assert "Phase 1 — Diagnose" not in incremental_prompt
 
 
 def test_bandit_prompt_includes_context_policy_without_leaking_to_default():
@@ -435,3 +428,61 @@ def test_bandit_prompt_includes_context_policy_without_leaking_to_default():
     assert "Bandit reference roles" in prompt
     assert "iter_003" in prompt
     assert "worst" not in prompt
+
+
+def _markers_only_in_role_block() -> tuple[str, ...]:
+    """A few unambiguous strings that come from proposer.md / workspace.md
+    but never appear in any iteration_header. Anchored on these so a
+    later prompt-template tweak doesn't silently break the assertion."""
+
+    return (
+        "## pending_eval.json conventions",
+        "benchmark-scoped and incomplete",
+    )
+
+
+def test_subagent_mode_drops_role_block_from_user_message():
+    """In subagent_mode the role/constraints reach the model via
+    proposer.md (subagent system prompt) and CLAUDE.md (auto-loaded
+    project context), so the user message must not duplicate them.
+    Without subagent_mode the legacy injection still concatenates
+    role_block at the tail."""
+
+    common = dict(
+        run_id="r",
+        iteration=4,
+        run_dir=Path("runs/r/proposer_calls/iter_004/workspace"),
+        pending_eval_path=Path(
+            "runs/r/proposer_calls/iter_004/workspace/pending_eval.json"
+        ),
+        summaries_dir=Path("runs/r/proposer_calls/iter_004/workspace/summaries"),
+        reference_iterations_dir=Path(
+            "runs/r/proposer_calls/iter_004/workspace/reference_iterations"
+        ),
+        generated_dir=Path("runs/r/proposer_calls/iter_004/workspace/generated"),
+        source_snapshot_dir=Path(
+            "runs/r/proposer_calls/iter_004/workspace/source_snapshot"
+        ),
+        budget="high",
+        reference_iterations=(1, 2, 3),
+        target_system="memgpt",
+        optimization_directions=(),
+        split="train",
+        limit=0,
+        selection_policy="default",
+    )
+
+    legacy_prompt = build_progressive_proposer_prompt(**common, subagent_mode=False)
+    subagent_prompt = build_progressive_proposer_prompt(**common, subagent_mode=True)
+
+    for marker in _markers_only_in_role_block():
+        assert marker in legacy_prompt, (
+            f"legacy prompt should still carry role_block marker {marker!r}"
+        )
+        assert marker not in subagent_prompt, (
+            f"subagent_mode prompt must not duplicate role_block marker "
+            f"{marker!r} in the user message"
+        )
+    # The iteration header must still be present in both modes.
+    assert "OptiHarness Proposer" in subagent_prompt
+    assert "## Assignment" in subagent_prompt
