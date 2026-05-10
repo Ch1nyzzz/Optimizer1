@@ -24,3 +24,7 @@ references/vendor/*/.git/
 
 .last_*_run_id
 .last_*_pids
+.last_*_pid
+.last_*_ts
+
+tests/
