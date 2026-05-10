@@ -165,6 +165,94 @@ MINI_SWE_AGENT_OPTIMIZATION_CELLS = {
 }
 
 
+GRAPH_COLOURING_TARGET = "graph_colouring_source"
+
+GRAPH_COLOURING_OPTIMIZATION_CELLS = {
+    "heuristic_core": OptimizationCell(
+        name="heuristic_core",
+        target_system=GRAPH_COLOURING_TARGET,
+        description=(
+            "Optimize the initial colouring strategy that produces the working "
+            "palette before local search."
+        ),
+        focus_functions=(
+            "colour_with_evolved",
+            "colour_with_dsatur",
+            "colour_with_welsh_powell",
+            "src/algorithms/dsatur.cpp",
+            "src/algorithms/welsh_powell.cpp",
+        ),
+        prompt_guidance=(
+            "Focus on the initial assignment: degree-saturation orderings, "
+            "Recursive Largest First, randomised tie-breaks, or independent-set "
+            "extraction as a warm start. The tabu/SA inner loops are downstream — "
+            "your job is to hand them a smaller starting palette."
+        ),
+    ),
+    "local_search": OptimizationCell(
+        name="local_search",
+        target_system=GRAPH_COLOURING_TARGET,
+        description=(
+            "Optimize the iterative repair loop that drives palette-size "
+            "reduction inside `evolved` (TabuCol, SA, or a successor)."
+        ),
+        focus_functions=(
+            "colour_with_evolved",
+            "colour_with_tabu",
+            "colour_with_simulated_annealing",
+            "src/algorithms/tabu.cpp",
+            "src/algorithms/simulated_annealing.cpp",
+        ),
+        prompt_guidance=(
+            "Focus on the inner search: tabu tenure schedules, conflict-driven "
+            "neighbourhood restriction, partition-based moves, frequency-based "
+            "diversification, aspiration criteria, restart policy. Avoid pure "
+            "scalar tuning — change the move space or the acceptance rule."
+        ),
+    ),
+    "hybridization": OptimizationCell(
+        name="hybridization",
+        target_system=GRAPH_COLOURING_TARGET,
+        description=(
+            "Combine multiple strategies inside `evolved` — warm-start, ensemble, "
+            "post-processing, density-aware dispatch."
+        ),
+        focus_functions=(
+            "colour_with_evolved",
+            "src/algorithms/evolved.cpp",
+            "build_algorithm_table",
+        ),
+        prompt_guidance=(
+            "Focus on the composition: DSatur warm-start feeding TabuCol, "
+            "Welsh-Powell post-shrink, path-relinking between TabuCol restarts, "
+            "HEA-style population on top of the existing search, density-aware "
+            "switching between solvers. Treat the upstream algorithms as a "
+            "library and implement the orchestrator."
+        ),
+    ),
+    "all": OptimizationCell(
+        name="all",
+        target_system=GRAPH_COLOURING_TARGET,
+        description="Global redesign of the evolved heuristic.",
+        focus_functions=(),
+        prompt_guidance=(
+            "You may reorganize the heuristic across warm-start, inner search, "
+            "and post-processing when the interaction between them is the "
+            "mechanism."
+        ),
+    ),
+}
+
+
+def _is_graph_colouring_target(target: str) -> bool:
+    return target in {
+        GRAPH_COLOURING_TARGET,
+        "graph_colouring",
+        "graphcolouring",
+        "graphcolour",
+    }
+
+
 def get_target_cells(target_system: str) -> list[OptimizationCell]:
     """Return optimization cells for the requested target system."""
 
@@ -173,6 +261,8 @@ def get_target_cells(target_system: str) -> list[OptimizationCell]:
         return list(MEMGPT_OPTIMIZATION_CELLS.values())
     if normalized in {MINI_SWE_AGENT_TARGET, "mini_swe_agent", "minisweagent"}:
         return list(MINI_SWE_AGENT_OPTIMIZATION_CELLS.values())
+    if _is_graph_colouring_target(normalized):
+        return list(GRAPH_COLOURING_OPTIMIZATION_CELLS.values())
     return []
 
 
@@ -184,6 +274,8 @@ def get_cell(name: str, target_system: str = "memgpt") -> OptimizationCell:
         cells = MEMGPT_OPTIMIZATION_CELLS
     elif normalized in {MINI_SWE_AGENT_TARGET, "mini_swe_agent", "minisweagent"}:
         cells = MINI_SWE_AGENT_OPTIMIZATION_CELLS
+    elif _is_graph_colouring_target(normalized):
+        cells = GRAPH_COLOURING_OPTIMIZATION_CELLS
     else:
         raise KeyError(f"unknown target system: {target_system}")
     try:

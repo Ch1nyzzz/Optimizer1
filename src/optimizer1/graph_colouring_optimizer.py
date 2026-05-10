@@ -17,6 +17,7 @@ from optimizer1.benchmark_workspaces import (
     BenchmarkWorkspaceSpec,
     GRAPH_COLOURING_WORKSPACE_SPEC,
 )
+from optimizer1.graph_colouring_overlay import apply_overlay as apply_graph_colouring_overlay
 from optimizer1.graph_colouring import (
     DEFAULT_GRAPH_COLOURING_NAME,
     DEFAULT_GRAPH_COLOURING_SOURCE_PATH,
@@ -184,9 +185,10 @@ class GraphColouringOptimizer(LocomoOptimizer):
         # The upstream repo is 305MB on disk because of data/network-repo. The
         # proposer never needs that, the generated artifacts, or the legacy
         # fetchers, so prune them on copy and keep the editable surface tight.
+        upstream_dest = dest_dir / "upstream_source" / "graph-colouring"
         self._copy_tree_if_exists(
             source,
-            dest_dir / "upstream_source" / "graph-colouring",
+            upstream_dest,
             ignore_names=(
                 "build",
                 "output",
@@ -199,6 +201,13 @@ class GraphColouringOptimizer(LocomoOptimizer):
                 "network-repo",
             ),
         )
+        # Inject the `evolved` algorithm slot so the proposer sees and edits
+        # the same scaffold the eval harness will compile against. Idempotent:
+        # if the snapshot tree already has the overlay (e.g. a parent_iter
+        # candidate was replayed) the call is a no-op and proposer edits to
+        # evolved.cpp are preserved.
+        if upstream_dest.exists():
+            apply_graph_colouring_overlay(upstream_dest)
 
     def _candidate_policy_scan_paths(self, candidate: dict[str, Any]) -> list[Path]:
         out = super()._candidate_policy_scan_paths(candidate)

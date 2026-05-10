@@ -28,7 +28,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from optimizer1.pareto import ParetoPoint, save_frontier
+from optimizer1.graph_colouring_overlay import apply_overlay as apply_graph_colouring_overlay
+from optimizer1.pareto import ParetoPoint, save_lex_frontier
 from optimizer1.schemas import CandidateResult, TaskResult
 
 
@@ -304,6 +305,15 @@ class GraphColouringSourceRunner:
         shutil.copytree(src_dir, workspace / "src", symlinks=False)
         shutil.copy2(makefile, workspace / "Makefile")
 
+        # Inject the `evolved` algorithm slot used by the eval harness. The
+        # overlay is idempotent, so it is also safe to apply on top of a
+        # workspace that already received the overlay (e.g. a snapshot the
+        # proposer copied forward from a previous iteration).
+        try:
+            apply_graph_colouring_overlay(workspace)
+        except Exception as exc:  # noqa: BLE001 - propagate as compile failure
+            return workspace, f"overlay failed: {exc}"
+
         try:
             completed = subprocess.run(
                 ["make", "all"],
@@ -547,7 +557,7 @@ def run_graph_colouring_frontier(
         agent_name=DEFAULT_GRAPH_COLOURING_NAME,
     )
     frontier_path = out_dir / "pareto_frontier.json"
-    save_frontier(
+    save_lex_frontier(
         frontier_path,
         [
             ParetoPoint(
@@ -561,8 +571,8 @@ def run_graph_colouring_frontier(
                 config=result.config,
             )
         ],
-        quality_gap_threshold=pareto_quality_threshold,
     )
+    del pareto_quality_threshold  # graph-colouring frontier uses lex tiebreaker
     summary = {
         "benchmark": "graph_colouring",
         "target_system": DEFAULT_GRAPH_COLOURING_NAME,

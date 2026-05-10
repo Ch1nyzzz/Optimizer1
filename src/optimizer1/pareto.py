@@ -96,6 +96,60 @@ def load_frontier(path: Path) -> list[ParetoPoint]:
     return [ParetoPoint(**_normalize_point(item)) for item in data]
 
 
+def lex_better(a: ParetoPoint, b: ParetoPoint) -> bool:
+    """Lexicographic dominance: passrate primary, token_consuming tiebreaker.
+
+    Used for benchmarks (graph-colouring) where the two evaluation axes are
+    not co-equal: the harness wants whichever candidate scored *strictly*
+    better on the primary axis, and falls back to the cost axis only when
+    the primaries match exactly.
+
+    Returns True iff ``a`` is strictly lex-better than ``b``.
+    """
+
+    if a.passrate > b.passrate:
+        return True
+    if a.passrate < b.passrate:
+        return False
+    return a.token_consuming < b.token_consuming
+
+
+def lex_pareto_frontier(
+    points: Iterable[ParetoPoint],
+    *,
+    top_k: int = FRONTIER_TOP_K,
+) -> list[ParetoPoint]:
+    """Top-K by lex order: passrate desc, then token_consuming asc.
+
+    Ties on both axes break by ``candidate_id`` desc so later iterations win
+    on identical metrics. This mirrors ``pareto_frontier``'s contract but
+    uses the lex tiebreaker required by the graph-colouring evaluation
+    rule (colors primary, runtime tiebreaker — encoded as passrate /
+    token_consuming on the stored candidate dataclass).
+    """
+
+    pool = list(points)
+    if not pool:
+        return []
+    pool.sort(key=lambda item: item.candidate_id, reverse=True)
+    pool.sort(key=lambda item: item.token_consuming)
+    pool.sort(key=lambda item: item.passrate, reverse=True)
+    return pool[: max(0, int(top_k))]
+
+
+def save_lex_frontier(
+    path: Path,
+    points: Iterable[ParetoPoint],
+    *,
+    top_k: int = FRONTIER_TOP_K,
+) -> None:
+    """Write a lex-ordered top-K frontier JSON."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = [asdict(point) for point in lex_pareto_frontier(points, top_k=top_k)]
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def _normalize_point(item: dict) -> dict:
     data = dict(item)
     if "scaffold_name" not in data and "seed_name" in data:

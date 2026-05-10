@@ -16,12 +16,26 @@ from pathlib import Path
 from optimizer1.prompts import load_role_prompt
 
 
+_GRAPH_COLOURING_TARGETS = {
+    "graph_colouring_source",
+    "graph_colouring",
+    "graphcolouring",
+    "graphcolour",
+}
+
+
+def _is_graph_colouring(target_system: str) -> bool:
+    return target_system.lower() in _GRAPH_COLOURING_TARGETS
+
+
 def _optimization_subject(target_system: str) -> str:
     """Return a short phrase for what the proposer is optimizing."""
 
     normalized = target_system.lower()
     if normalized in {"mini_swe_agent_source", "mini_swe_agent", "minisweagent"}:
         return "source-backed coding agent control loop"
+    if _is_graph_colouring(target_system):
+        return "source-backed C++ graph-colouring heuristic"
     return "memory layer"
 
 
@@ -38,6 +52,8 @@ def _default_source_project_path(source_snapshot_dir: Path, target_system: str) 
 
     if target_system.lower() in {"mini_swe_agent_source", "mini_swe_agent", "minisweagent"}:
         return f"{source_snapshot_dir}/candidate/upstream_source/mini-swe-agent"
+    if _is_graph_colouring(target_system):
+        return f"{source_snapshot_dir}/candidate/upstream_source/graph-colouring"
     return f"{source_snapshot_dir}/candidate/project_source"
 
 
@@ -277,17 +293,43 @@ fills a diagnostic gap, read it.
         "mini_swe_agent",
         "minisweagent",
     }
-    source_path_note = (
-        "`extra.source_project_path` must point to the edited mini-SWE-agent "
-        "snapshot under `source_snapshot/candidate/upstream_source/mini-swe-agent`."
-        if is_mini_swe_agent
-        else "`extra.source_project_path` must point to the edited snapshot project source "
-        "when files under `project_source/src/optimizer1` are modified."
-    )
+    is_graph_colouring = _is_graph_colouring(target_system)
+    if is_mini_swe_agent:
+        source_path_note = (
+            "`extra.source_project_path` must point to the edited mini-SWE-agent "
+            "snapshot under `source_snapshot/candidate/upstream_source/mini-swe-agent`."
+        )
+    elif is_graph_colouring:
+        source_path_note = (
+            "`extra.source_project_path` must point to the edited graph-colouring "
+            "snapshot under `source_snapshot/candidate/upstream_source/graph-colouring`."
+        )
+    else:
+        source_path_note = (
+            "`extra.source_project_path` must point to the edited snapshot project source "
+            "when files under `project_source/src/optimizer1` are modified."
+        )
     mini_swe_source_note = (
         f"- `{source_snapshot_display}/candidate/upstream_source/mini-swe-agent/` — "
         "primary editable mini-SWE-agent source tree for coding-agent mechanisms.\n"
         if is_mini_swe_agent
+        else ""
+    )
+    graph_colouring_source_note = (
+        (
+            f"- `{source_snapshot_display}/candidate/upstream_source/graph-colouring/src/algorithms/` — "
+            "editable C++ algorithm files. Mutate `evolved.cpp` (the seed delegates "
+            "to TabuCol) and freely include / call the other algorithms (`dsatur.h`, "
+            "`welsh_powell.h`, `tabu.h`, `simulated_annealing.h`, `genetic.h`, "
+            "`exact_solver.h`) to build hybrid heuristics.\n"
+            f"- `{source_snapshot_display}/candidate/upstream_source/graph-colouring/src/benchmark_runner.cpp` — "
+            "editable dispatch / CLI entry. You MAY register additional algorithm "
+            "names; the harness always invokes `--algorithm evolved`, so keep that "
+            "entry working.\n"
+            f"- `{source_snapshot_display}/candidate/upstream_source/graph-colouring/data/dimacs/` — "
+            "read-only DIMACS instances used for evaluation.\n"
+        )
+        if is_graph_colouring
         else ""
     )
     mini_swe_edit_note = (
@@ -296,6 +338,26 @@ fills a diagnostic gap, read it.
         "for agent control-loop, prompt/config, action parsing, verification, or "
         "submission behavior, and point `extra.source_project_path` at that tree.\n"
         if is_mini_swe_agent
+        else ""
+    )
+    graph_colouring_edit_note = (
+        (
+            "\nFor graph-colouring candidates, your editable surface is "
+            f"`{source_snapshot_display}/candidate/upstream_source/graph-colouring/src/algorithms/**` "
+            "and `src/benchmark_runner.cpp`. Do NOT edit `src/io/**` (the CSV "
+            "writer is the integrity boundary), the Makefile, or anything outside "
+            "the upstream copy. Point `extra.source_project_path` at the "
+            "graph-colouring tree.\n\n"
+            "Evaluation is lexicographic:\n"
+            "1. PRIMARY  — colors_used per instance, lower is strictly better.\n"
+            "2. TIEBREAK — runtime_ms, lower wins, but ONLY when colors_used "
+            "matches.\n\n"
+            "Do not trade more colours for less runtime — that is a regression. "
+            "Do not read the chromatic-number metadata at runtime, hardcode a "
+            "known-optimal lookup, or short-circuit the colouring search; those "
+            "candidates are auto-rejected by the policy scanner.\n"
+        )
+        if is_graph_colouring
         else ""
     )
 
@@ -402,7 +464,7 @@ You are optimizing the {optimization_subject} for {benchmark_name}.
   clean project source used for diffing and policy checks.
 - `{source_snapshot_display}/candidate/upstream_source/` — copied upstream
   source when available.
-{mini_swe_source_note}
+{mini_swe_source_note}{graph_colouring_source_note}
 - `{generated_display}/` — optional importable wrapper modules for this
   iteration.
 {trace_harness_section}
@@ -420,7 +482,7 @@ All copied project source under
 `{source_snapshot_display}/candidate/project_source/src/optimizer1/**` is editable
 for this candidate, including scaffolds, base classes, model/prompt helpers,
 dynamic-loading helpers, and utils.
-{mini_swe_edit_note}
+{mini_swe_edit_note}{graph_colouring_edit_note}
 
 ## Required output for this iteration
 
