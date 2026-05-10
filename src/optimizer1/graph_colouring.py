@@ -368,6 +368,11 @@ class GraphColouringSourceRunner:
         coloring_out: Path,
         task_dir: Path,
     ) -> GraphColouringRun:
+        # The subprocess runs with cwd=workspace, so any relative path in the
+        # CLI args resolves against the workspace tree. Force absolute paths
+        # for outputs the harness owns; instance.path is already resolved.
+        coloring_out_abs = coloring_out.resolve()
+        results_csv_abs = results_csv.resolve()
         cmd = [
             str(runner_bin),
             "--algorithm",
@@ -377,9 +382,9 @@ class GraphColouringSourceRunner:
             "--graph-name",
             instance.name,
             "--output",
-            str(coloring_out),
+            str(coloring_out_abs),
             "--results",
-            str(results_csv),
+            str(results_csv_abs),
         ]
         started = time.time()
         try:

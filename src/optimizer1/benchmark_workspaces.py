@@ -90,6 +90,26 @@ SWEBENCH_WORKSPACE_SPEC = BenchmarkWorkspaceSpec(
 )
 
 
+GRAPH_COLOURING_WORKSPACE_SPEC = BenchmarkWorkspaceSpec(
+    benchmark="graph_colouring",
+    primary_source_file="graph_colouring.py",
+    source_files=(
+        "__init__.py",
+        "benchmark_tasks.py",
+        "benchmark_workspaces.py",
+        "claude_runner.py",
+        "graph_colouring.py",
+        "graph_colouring_optimizer.py",
+        "model.py",
+        "optimizer.py",
+        "pareto.py",
+        "post_eval.py",
+        "proposer_prompt.py",
+        "schemas.py",
+    ),
+)
+
+
 def copy_benchmark_project_source(
     *,
     project_root: Path,

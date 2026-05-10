@@ -52,10 +52,21 @@ SWEBENCH_TASK = BenchmarkTaskSpec(
     description="SWE-bench-style software engineering tasks over a source-backed mini-SWE-agent coding agent.",
 )
 
+GRAPH_COLOURING_TASK = BenchmarkTaskSpec(
+    slug="graph_colouring",
+    aliases=("graph-colouring", "graphcolouring", "graphcolor", "gc"),
+    benchmark="graph_colouring",
+    base_agent_system="graph_colouring_source",
+    optimizer_kind="heuristic_solver",
+    default_run_id="graph_colouring_opt",
+    description="Graph-colouring DIMACS benchmark over a source-backed C++ heuristic mutated by the proposer.",
+)
+
 BENCHMARK_TASKS: tuple[BenchmarkTaskSpec, ...] = (
     LOCOMO_TASK,
     LONGMEMEVAL_TASK,
     SWEBENCH_TASK,
+    GRAPH_COLOURING_TASK,
 )
 
 _TASK_BY_NAME = {

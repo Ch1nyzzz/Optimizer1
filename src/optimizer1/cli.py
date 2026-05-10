@@ -30,6 +30,18 @@ from optimizer1.longmemeval_optimizer import (
 from optimizer1.model import DEFAULT_BASE_URL, DEFAULT_MODEL
 from optimizer1.swebench import DEFAULT_MINI_SWE_AGENT_SOURCE_PATH
 from optimizer1.swebench_optimizer import SwebenchOptimizer, SwebenchOptimizerConfig
+from optimizer1.graph_colouring import (
+    DEFAULT_COMPILE_TIMEOUT_S as DEFAULT_GRAPH_COLOURING_COMPILE_TIMEOUT_S,
+    DEFAULT_GRAPH_COLOURING_SOURCE_PATH,
+    DEFAULT_TARGET_ALGORITHM as DEFAULT_GRAPH_COLOURING_TARGET_ALGORITHM,
+    DEFAULT_TEST_INSTANCES as DEFAULT_GRAPH_COLOURING_TEST_INSTANCES,
+    DEFAULT_TIME_BUDGET_S as DEFAULT_GRAPH_COLOURING_TIME_BUDGET_S,
+    DEFAULT_TRAIN_INSTANCES as DEFAULT_GRAPH_COLOURING_TRAIN_INSTANCES,
+)
+from optimizer1.graph_colouring_optimizer import (
+    GraphColouringOptimizer,
+    GraphColouringOptimizerConfig,
+)
 from optimizer1.scaffolds import (
     DEFAULT_BASELINE_SCAFFOLDS,
     DEFAULT_EVOLUTION_SEED_SCAFFOLDS,
@@ -217,6 +229,12 @@ def main() -> int:
         dest="task_swebench",
         action="store_true",
         help="Optimize the SWE-bench coding-agent benchmark.",
+    )
+    task_flags.add_argument(
+        "--graph-colouring",
+        dest="task_graph_colouring",
+        action="store_true",
+        help="Optimize the graph-colouring DIMACS C++ heuristic benchmark.",
     )
     optimize.add_argument("--iterations", type=int, default=20)
     optimize.add_argument("--split", choices=("warmup", "train", "test"), default="train")
@@ -505,6 +523,54 @@ def main() -> int:
         default="",
         help="Optional command template that evaluates {patch_path}; exit code 0 means pass.",
     )
+    optimize.add_argument(
+        "--graph-colouring-source-path",
+        type=Path,
+        default=DEFAULT_GRAPH_COLOURING_SOURCE_PATH,
+        help=(
+            "Path to a local checkout of Rmehta-sudo/graph-colouring. Defaults "
+            "to references/vendor/graph-colouring (run "
+            "scripts/fetch_reference_repos.sh to clone)."
+        ),
+    )
+    optimize.add_argument(
+        "--graph-colouring-target-algorithm",
+        default=DEFAULT_GRAPH_COLOURING_TARGET_ALGORITHM,
+        help=(
+            "Algorithm name passed to build/benchmark_runner --algorithm <NAME>. "
+            "Default 'evolved' is the slot the proposer mutates; switch to "
+            "dsatur/tabu_search/simulated_annealing/etc. only for diagnostic "
+            "runs against unmodified upstream."
+        ),
+    )
+    optimize.add_argument(
+        "--graph-colouring-time-budget-s",
+        type=int,
+        default=DEFAULT_GRAPH_COLOURING_TIME_BUDGET_S,
+        help="Per-instance runner timeout in seconds.",
+    )
+    optimize.add_argument(
+        "--graph-colouring-compile-timeout-s",
+        type=int,
+        default=DEFAULT_GRAPH_COLOURING_COMPILE_TIMEOUT_S,
+        help="Per-candidate `make all` timeout in seconds.",
+    )
+    optimize.add_argument(
+        "--graph-colouring-train-instances",
+        default="",
+        help=(
+            "Comma-separated DIMACS .col filenames to use as the training set. "
+            "Empty = the curated default subset."
+        ),
+    )
+    optimize.add_argument(
+        "--graph-colouring-test-instances",
+        default="",
+        help=(
+            "Comma-separated DIMACS .col filenames for the held-out test set. "
+            "Empty = the curated default subset."
+        ),
+    )
     args = parser.parse_args()
     if args.command == "locomo" and args.locomo_command == "prepare":
         payload = prepare_locomo(
@@ -745,6 +811,65 @@ def main() -> int:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
             return 0
 
+        if selected_task == "graph_colouring":
+            train_instances = tuple(_csv(args.graph_colouring_train_instances)) or (
+                DEFAULT_GRAPH_COLOURING_TRAIN_INSTANCES
+            )
+            test_instances = tuple(_csv(args.graph_colouring_test_instances)) or (
+                DEFAULT_GRAPH_COLOURING_TEST_INSTANCES
+            )
+            optimizer = GraphColouringOptimizer(
+                GraphColouringOptimizerConfig(
+                    run_id=run_id,
+                    out_dir=out_dir,
+                    iterations=args.iterations,
+                    split=args.split,
+                    limit=args.limit,
+                    graph_colouring_source_path=args.graph_colouring_source_path,
+                    target_algorithm=args.graph_colouring_target_algorithm,
+                    time_budget_s=args.graph_colouring_time_budget_s,
+                    compile_timeout_s=args.graph_colouring_compile_timeout_s,
+                    train_instances=train_instances,
+                    test_instances=test_instances,
+                    model=args.model,
+                    base_url=args.base_url,
+                    api_key=args.api_key,
+                    eval_timeout_s=args.eval_timeout_s,
+                    proposer_agent=args.proposer_agent,
+                    claude_model=args.claude_model,
+                    claude_base_url=args.claude_base_url,
+                    claude_auth_token=args.claude_auth_token,
+                    claude_native_auth=args.claude_native_auth,
+                    propose_timeout_s=args.propose_timeout_s,
+                    dry_run=args.dry_run,
+                    max_context_chars=args.max_context_chars,
+                    max_eval_workers=args.eval_workers,
+                    skip_scaffold_eval=args.skip_scaffold_eval,
+                    baseline_dir=args.baseline_dir,
+                    selection_policy=args.selection_policy,
+                    include_optimization_direction=args.include_optimization_direction,
+                    force_budget=args.force_budget,
+                    progressive_low_best_count=args.progressive_low_best_count,
+                    progressive_medium_best_count=args.progressive_medium_best_count,
+                    bandit_reward_window=args.bandit_reward_window,
+                    pareto_quality_threshold=args.pareto_quality_threshold,
+                    proposer_sandbox=args.proposer_sandbox,
+                    proposer_docker_image=args.proposer_docker_image,
+                    proposer_docker_workspace=args.proposer_docker_workspace,
+                    proposer_docker_env=tuple(_csv_many(args.proposer_docker_env)),
+                    proposer_docker_mount=tuple(args.proposer_docker_mount or ()),
+                    proposer_docker_user=args.proposer_docker_user,
+                    proposer_docker_home=args.proposer_docker_home,
+                    force=args.force,
+                    trace_baseline_path=args.trace_baseline,
+                    proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
+                    diagnose=args.diagnose,
+                )
+            )
+            payload = optimizer.run()
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+
         selected_scaffolds = (
             _csv(args.scaffolds)
             if args.scaffolds
@@ -885,6 +1010,7 @@ def _optimize_task(args: argparse.Namespace) -> str:
             ("locomo", args.task_locomo),
             ("longmemeval", args.task_longmemeval),
             ("swebench", args.task_swebench),
+            ("graph_colouring", args.task_graph_colouring),
         )
         if enabled
     ]
