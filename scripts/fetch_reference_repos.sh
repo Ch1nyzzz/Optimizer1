@@ -22,3 +22,4 @@ clone_or_update rank_bm25 https://github.com/dorianbrown/rank_bm25.git
 clone_or_update mem0 https://github.com/mem0ai/mem0.git
 clone_or_update MemGPT https://github.com/cpacker/MemGPT.git
 clone_or_update MemoryBank-SiliconFriend https://github.com/zhongwanjun/MemoryBank-SiliconFriend.git
+clone_or_update graph-colouring https://github.com/Rmehta-sudo/graph-colouring.git

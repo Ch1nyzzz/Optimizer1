@@ -21,6 +21,7 @@ htmlcov/
 *.log
 
 references/vendor/*/.git/
+references/vendor/graph-colouring/
 
 .last_*_run_id
 .last_*_pids

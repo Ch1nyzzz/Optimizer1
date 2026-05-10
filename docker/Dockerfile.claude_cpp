@@ -1,0 +1,22 @@
+# Proposer/eval image for the graph-colouring benchmark. Extends docker-claude
+# with the C++20 toolchain (g++ >= 10, make) needed to compile the upstream
+# graph-colouring repo (https://github.com/Rmehta-sudo/graph-colouring) and run
+# build/benchmark_runner inside the proposer sandbox.
+#
+# Rebuild:
+#   docker build -t docker-claude-cpp:latest \
+#     -f docker/Dockerfile.claude_cpp docker/
+#
+# Smoke check:
+#   docker run --rm docker-claude-cpp:latest g++ --version
+#   docker run --rm docker-claude-cpp:latest make --version
+FROM docker-claude:latest
+
+USER root
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        g++ \
+        make \
+    && rm -rf /var/lib/apt/lists/* \
+    && g++ --version \
+    && make --version
