@@ -81,6 +81,16 @@ class OptimizerConfig:
     max_context_chars: int = 6000
     max_eval_workers: int = 1
     skip_scaffold_eval: bool = False
+    resume: bool = False
+    # When a proposer invocation reports an Anthropic usage-limit rejection
+    # (HTTP 429 / rejected rate_limit_event), sleep until the limit window
+    # resets and retry the same invocation instead of burning the iteration.
+    wait_on_rate_limit: bool = True
+    rate_limit_buffer_s: int = 120
+    rate_limit_default_wait_s: int = 1800
+    rate_limit_max_wait_s: int = 6 * 3600
+    rate_limit_max_retries: int = 8
+    rate_limit_poll_log_s: int = 300
     baseline_dir: Path | None = None
     scaffolds: tuple[str, ...] = DEFAULT_EVOLUTION_SEED_SCAFFOLDS
     scaffold_extra: dict[str, dict[str, object]] | None = None
@@ -113,6 +123,7 @@ class OptimizerConfig:
     test_frontier: bool = False
     test_split: str = "test"
     test_limit: int = 0
+    test_frontier_candidate_limit: int = 0
     trace_baseline_path: Path | None = None
     proposer_show_trace_harness_section: bool = True
     diagnose: bool = False
@@ -221,16 +232,51 @@ class LocomoOptimizer:
                     )
                 candidates.append(candidate)
                 self._append_summary(iteration=0, candidate=candidate)
-        elif not self.config.skip_scaffold_eval:
+        elif not (self.config.skip_scaffold_eval or self.config.resume):
             scaffold_summary = self._run_seed_frontier()
             for item in scaffold_summary.get("candidates", []):
                 candidate = CandidateResult.from_dict(item)
                 candidates.append(candidate)
                 self._append_summary(iteration=0, candidate=candidate)
         else:
+            if self.config.resume and not (self.run_dir / "candidate_results").exists():
+                raise ValueError(
+                    f"--resume: no candidate_results/ under {self.run_dir}; "
+                    "nothing to resume from."
+                )
             candidates.extend(self._load_existing_candidates())
+            if self.config.resume and not candidates:
+                raise ValueError(
+                    f"--resume: candidate_results/ under {self.run_dir} is empty "
+                    "or unreadable; nothing to resume from."
+                )
 
-        if candidates and not self.config.skip_scaffold_eval:
+        # Reusing scaffold/baseline rows is mutually exclusive with resume;
+        # resume always reloads from candidate_results and never re-records
+        # iteration 0, exactly like --skip-scaffold-eval.
+        skip_iter0_recording = self.config.skip_scaffold_eval or self.config.resume
+
+        start_iteration = 1
+        if self.config.resume:
+            start_iteration = self._resume_start_iteration(candidates)
+            # Drop any stale per-iteration artifacts for the iterations we
+            # are about to (re)run — these may exist as crashed/partial dirs
+            # plus dangling evolution_summary / diff_summary rows.
+            self._clean_stale_iteration_artifacts(start_iteration)
+            if self.config.selection_policy in {
+                "progressive",
+                "curai",
+                "curaii",
+                "pareto",
+            }:
+                # Crashed iterations still bumped stagnation_count etc.;
+                # rebuild progressive_state.json from the surviving rows so
+                # the historian/budget heuristics see the true streak.
+                self._rederive_progressive_state(
+                    candidates, start_iteration=start_iteration
+                )
+
+        if candidates and not skip_iter0_recording:
             best_ids = self._quality_frontier_ids(candidates)
             write_post_eval_artifacts(
                 run_dir=self.run_dir,
@@ -248,7 +294,7 @@ class LocomoOptimizer:
         self._save_best_candidates(candidates)
         self._refresh_run_indexes(candidates)
 
-        for iteration in range(1, self.config.iterations + 1):
+        for iteration in range(start_iteration, self.config.iterations + 1):
             previous_best_passrate = self._best_passrate(candidates)
             previous_frontier_ids = self._quality_frontier_ids(candidates)
             previous_best_quality = self._best_quality_value(candidates)
@@ -1335,7 +1381,9 @@ class LocomoOptimizer:
         )
 
     def _run_test_frontier(self, candidates: list[CandidateResult]) -> dict[str, Any]:
-        frontier = self._quality_frontier(candidates)
+        full_frontier = self._quality_frontier(candidates)
+        candidate_limit = max(0, int(self.config.test_frontier_candidate_limit or 0))
+        frontier = full_frontier[:candidate_limit] if candidate_limit else full_frontier
         test_dir = self.run_dir / "test_frontier"
         specs_dir = test_dir / "candidate_specs"
         specs_dir.mkdir(parents=True, exist_ok=True)
@@ -1424,6 +1472,8 @@ class LocomoOptimizer:
             "split": self.config.test_split,
             "limit": self.config.test_limit,
             "count": len(examples),
+            "train_frontier_total_count": len(full_frontier),
+            "candidate_limit": candidate_limit,
             "train_frontier_count": len(frontier),
             "evaluated_count": len(test_results),
             "failed_count": len(failures),
@@ -1525,7 +1575,74 @@ class LocomoOptimizer:
         # via the Task tool and uses its own subagent file.)
         if self._uses_claude_subagent_proposer() and name == "proposer":
             kwargs["claude_agent_name"] = "proposer"
-        return run_code_agent_prompt(prompt, agent=agent, **kwargs)
+
+        retries = 0
+        while True:
+            result = run_code_agent_prompt(prompt, agent=agent, **kwargs)
+            if not (
+                self.config.wait_on_rate_limit
+                and getattr(result, "rate_limited", False)
+                and retries < self.config.rate_limit_max_retries
+            ):
+                return result
+            retries += 1
+            self._wait_for_rate_limit_reset(
+                result, retry=retries, name=name, log_dir=log_dir
+            )
+
+    def _wait_for_rate_limit_reset(
+        self, result: Any, *, retry: int, name: str, log_dir: Path
+    ) -> None:
+        """Sleep until an Anthropic usage-limit window resets, logging a
+        ``proposer_rate_limited`` event and periodic progress.
+
+        Called from :meth:`_run_proposer_agent` before retrying the same
+        invocation, so a 429 does not consume the iteration."""
+
+        now = time.time()
+        resets_at = getattr(result, "rate_limit_resets_at", None)
+        if isinstance(resets_at, (int, float)) and resets_at > now:
+            wait_s = (resets_at - now) + self.config.rate_limit_buffer_s
+        else:
+            wait_s = float(self.config.rate_limit_default_wait_s)
+        wait_s = max(1.0, min(wait_s, float(self.config.rate_limit_max_wait_s)))
+        resume_at = now + wait_s
+        self._append_event(
+            {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "event": "proposer_rate_limited",
+                "name": name,
+                "log_dir": str(log_dir),
+                "retry": retry,
+                "max_retries": self.config.rate_limit_max_retries,
+                "resets_at": resets_at,
+                "wait_s": round(wait_s, 1),
+                "resume_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%S", time.localtime(resume_at)
+                ),
+            }
+        )
+        poll = max(1, int(self.config.rate_limit_poll_log_s))
+        print(
+            f"[{self.config.run_id}] {name}: usage limit hit "
+            f"(retry {retry}/{self.config.rate_limit_max_retries}); "
+            f"waiting ~{wait_s / 60:.1f} min, resuming at "
+            f"{time.strftime('%H:%M:%S', time.localtime(resume_at))}",
+            flush=True,
+        )
+        while True:
+            remaining = resume_at - time.time()
+            if remaining <= 0:
+                break
+            chunk = min(float(poll), remaining)
+            time.sleep(chunk)
+            remaining = resume_at - time.time()
+            if remaining > 0:
+                print(
+                    f"[{self.config.run_id}] {name}: still rate-limited, "
+                    f"~{remaining / 60:.1f} min left",
+                    flush=True,
+                )
 
     def _proposer_sandbox_config(self) -> ProposerSandboxConfig | None:
         kind = self.config.proposer_sandbox.strip().lower()
@@ -1920,6 +2037,107 @@ class LocomoOptimizer:
             except Exception:
                 continue
         return out
+
+    def _resume_start_iteration(self, candidates: list[CandidateResult]) -> int:
+        """First iteration to (re)run on ``--resume``.
+
+        Iterations that already produced a stored candidate are treated as
+        complete (this includes iterations whose proposer ran but whose
+        candidate was rejected by the selection policy — those budget rounds
+        were spent). We resume at ``max(completed) + 1``; if nothing past
+        the seed is stored we start at 1, and if every iteration through
+        ``config.iterations`` is already done the train loop is a no-op and
+        only the test-frontier step (if enabled) runs.
+        """
+
+        completed = {it for it in self._candidate_iterations(candidates) if it >= 1}
+        return (max(completed) + 1) if completed else 1
+
+    def _clean_stale_iteration_artifacts(self, start_iteration: int) -> None:
+        """Remove per-iteration dirs and dangling jsonl rows for iterations
+        ``>= start_iteration`` before a ``--resume`` rerun.
+
+        Crashed/partial ``proposer_calls/iter_NNN`` dirs and the
+        ``proposer_failed`` rows they left in ``evolution_summary.jsonl`` /
+        ``diff_summary.jsonl`` would otherwise shadow the fresh run."""
+
+        calls_dir = self.run_dir / "proposer_calls"
+        if calls_dir.exists():
+            for child in calls_dir.iterdir():
+                iteration = _iteration_from_dir_name(child.name)
+                if iteration is not None and iteration >= start_iteration and child.is_dir():
+                    shutil.rmtree(child)
+
+        for path in (self.summary_path, self.diff_summary_path):
+            if not path.exists():
+                continue
+            kept: list[str] = []
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    iteration = row.get("iteration")
+                except (json.JSONDecodeError, AttributeError):
+                    kept.append(line)
+                    continue
+                if isinstance(iteration, int) and iteration >= start_iteration:
+                    continue
+                kept.append(line)
+            path.write_text(
+                ("\n".join(kept) + "\n") if kept else "", encoding="utf-8"
+            )
+
+    def _rederive_progressive_state(
+        self, candidates: list[CandidateResult], *, start_iteration: int
+    ) -> None:
+        """Rebuild ``progressive_state.json`` from the surviving candidates so
+        ``--resume`` is not penalised by crashed iterations that bumped
+        ``stagnation_count`` / cycled the budget without producing a row.
+
+        Mirrors ``_update_progressive_state``'s pareto-style advance rule
+        (best passrate must strictly increase) replayed over the stored
+        iterations in order."""
+
+        best_per_iter: dict[int, CandidateResult] = {}
+        for candidate in candidates:
+            iteration = _candidate_iteration(candidate.candidate_id)
+            if iteration is None or iteration < 1:
+                continue
+            current = best_per_iter.get(iteration)
+            if current is None or _candidate_score(candidate) > _candidate_score(current):
+                best_per_iter[iteration] = candidate
+
+        running_best_passrate = self._seed_passrate(candidates)
+        last_improved = 0
+        for iteration in sorted(best_per_iter):
+            if best_per_iter[iteration].passrate > running_best_passrate:
+                running_best_passrate = best_per_iter[iteration].passrate
+                last_improved = iteration
+        stagnation = max(0, (start_iteration - 1) - last_improved)
+
+        overall_best = max(candidates, key=_candidate_score) if candidates else None
+        frontier_ids = self._quality_frontier_ids(candidates)
+        prior = self._load_progressive_state()
+        budget = str(prior.get("current_budget") or "high")
+        state = {
+            "current_budget": budget,
+            "next_budget": str(prior.get("next_budget") or budget),
+            "stagnation_count": stagnation,
+            "best_passrate": overall_best.passrate if overall_best is not None else 0.0,
+            "best_average_score": (
+                overall_best.average_score if overall_best is not None else 0.0
+            ),
+            "best_candidate_id": (
+                overall_best.candidate_id if overall_best is not None else None
+            ),
+            "frontier_candidate_ids": sorted(frontier_ids),
+            "last_improved_iteration": last_improved,
+        }
+        self.progressive_state_path.write_text(
+            json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     def _iteration_dir(self, iteration: int) -> Path:
         return self.run_dir / "proposer_calls" / f"iter_{iteration:03d}"

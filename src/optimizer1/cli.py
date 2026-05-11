@@ -438,6 +438,52 @@ def main() -> int:
         help="Resume from existing candidate_results instead of rerunning built-in scaffolds.",
     )
     optimize.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Continue an existing --run-id: reload candidate_results/ (implies "
+            "--skip-scaffold-eval's load path, no seed re-eval), resume the "
+            "iteration loop at max(completed iteration)+1, wipe stale per-iter "
+            "dirs/rows for the iterations being rerun, and rebuild "
+            "progressive_state.json from the surviving rows."
+        ),
+    )
+    optimize.add_argument(
+        "--no-wait-on-rate-limit",
+        dest="wait_on_rate_limit",
+        action="store_false",
+        help=(
+            "Disable the default behaviour of pausing the iteration loop until "
+            "an Anthropic usage-limit window resets and retrying the same "
+            "proposer call; instead a 429 fails the iteration immediately."
+        ),
+    )
+    optimize.set_defaults(wait_on_rate_limit=True)
+    optimize.add_argument(
+        "--rate-limit-buffer-s",
+        type=int,
+        default=120,
+        help="Seconds to wait past the reported reset time before retrying (default 120).",
+    )
+    optimize.add_argument(
+        "--rate-limit-default-wait-s",
+        type=int,
+        default=1800,
+        help="Fallback wait when the transcript carries no reset timestamp (default 1800).",
+    )
+    optimize.add_argument(
+        "--rate-limit-max-wait-s",
+        type=int,
+        default=6 * 3600,
+        help="Hard cap on a single rate-limit wait (default 21600 = 6h).",
+    )
+    optimize.add_argument(
+        "--rate-limit-max-retries",
+        type=int,
+        default=8,
+        help="Maximum consecutive rate-limit waits per proposer call before failing it (default 8).",
+    )
+    optimize.add_argument(
         "--force",
         action="store_true",
         help="Rerun task-specific baseline/seed evaluations instead of reusing cached rows.",
@@ -458,6 +504,15 @@ def main() -> int:
         type=int,
         default=0,
         help="Optional limit for automatic final test-frontier evaluation.",
+    )
+    optimize.add_argument(
+        "--test-frontier-candidate-limit",
+        type=int,
+        default=0,
+        help=(
+            "Optional number of train-frontier candidates to evaluate on the "
+            "test split. Default 0 evaluates the whole frontier."
+        ),
     )
     optimize.add_argument(
         "--trace-baseline",
@@ -732,6 +787,12 @@ def main() -> int:
                     max_context_chars=args.max_context_chars,
                     max_eval_workers=args.eval_workers,
                     skip_scaffold_eval=args.skip_scaffold_eval,
+                    resume=args.resume,
+                    wait_on_rate_limit=args.wait_on_rate_limit,
+                    rate_limit_buffer_s=args.rate_limit_buffer_s,
+                    rate_limit_default_wait_s=args.rate_limit_default_wait_s,
+                    rate_limit_max_wait_s=args.rate_limit_max_wait_s,
+                    rate_limit_max_retries=args.rate_limit_max_retries,
                     baseline_dir=args.baseline_dir,
                     scaffolds=tuple(selected_scaffolds),
                     scaffold_extra=scaffold_extra,
@@ -751,6 +812,7 @@ def main() -> int:
                     proposer_docker_home=args.proposer_docker_home,
                     test_frontier=not args.no_test_frontier,
                     test_limit=args.test_frontier_limit,
+                    test_frontier_candidate_limit=args.test_frontier_candidate_limit,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                     diagnose=args.diagnose,
@@ -786,6 +848,12 @@ def main() -> int:
                     max_context_chars=args.max_context_chars,
                     max_eval_workers=args.eval_workers,
                     skip_scaffold_eval=args.skip_scaffold_eval,
+                    resume=args.resume,
+                    wait_on_rate_limit=args.wait_on_rate_limit,
+                    rate_limit_buffer_s=args.rate_limit_buffer_s,
+                    rate_limit_default_wait_s=args.rate_limit_default_wait_s,
+                    rate_limit_max_wait_s=args.rate_limit_max_wait_s,
+                    rate_limit_max_retries=args.rate_limit_max_retries,
                     baseline_dir=args.baseline_dir,
                     selection_policy=args.selection_policy,
                     include_optimization_direction=args.include_optimization_direction,
@@ -802,6 +870,9 @@ def main() -> int:
                     proposer_docker_user=args.proposer_docker_user,
                     proposer_docker_home=args.proposer_docker_home,
                     force=args.force,
+                    test_frontier=not args.no_test_frontier,
+                    test_limit=args.test_frontier_limit,
+                    test_frontier_candidate_limit=args.test_frontier_candidate_limit,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                     diagnose=args.diagnose,
@@ -845,6 +916,12 @@ def main() -> int:
                     max_context_chars=args.max_context_chars,
                     max_eval_workers=args.eval_workers,
                     skip_scaffold_eval=args.skip_scaffold_eval,
+                    resume=args.resume,
+                    wait_on_rate_limit=args.wait_on_rate_limit,
+                    rate_limit_buffer_s=args.rate_limit_buffer_s,
+                    rate_limit_default_wait_s=args.rate_limit_default_wait_s,
+                    rate_limit_max_wait_s=args.rate_limit_max_wait_s,
+                    rate_limit_max_retries=args.rate_limit_max_retries,
                     baseline_dir=args.baseline_dir,
                     selection_policy=args.selection_policy,
                     include_optimization_direction=args.include_optimization_direction,
@@ -897,6 +974,12 @@ def main() -> int:
                 max_context_chars=args.max_context_chars,
                 max_eval_workers=args.eval_workers,
                 skip_scaffold_eval=args.skip_scaffold_eval,
+                resume=args.resume,
+                wait_on_rate_limit=args.wait_on_rate_limit,
+                rate_limit_buffer_s=args.rate_limit_buffer_s,
+                rate_limit_default_wait_s=args.rate_limit_default_wait_s,
+                rate_limit_max_wait_s=args.rate_limit_max_wait_s,
+                rate_limit_max_retries=args.rate_limit_max_retries,
                 baseline_dir=args.baseline_dir,
                 scaffolds=tuple(selected_scaffolds),
                 scaffold_extra=scaffold_extra,
@@ -916,6 +999,7 @@ def main() -> int:
                 proposer_docker_home=args.proposer_docker_home,
                 test_frontier=not args.no_test_frontier,
                 test_limit=args.test_frontier_limit,
+                test_frontier_candidate_limit=args.test_frontier_candidate_limit,
                 trace_baseline_path=args.trace_baseline,
                 proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                 diagnose=args.diagnose,

@@ -62,6 +62,12 @@ class ClaudeResult:
     tool_access: dict[str, Any]
     duration_s: float
     metrics: dict[str, Any] = field(default_factory=dict)
+    # True when the stream-json transcript reported an Anthropic usage-limit
+    # rejection (HTTP 429 / "you've hit your limit" / a rejected
+    # ``rate_limit_event``). ``rate_limit_resets_at`` is the epoch seconds
+    # the limit window resets, when the transcript carried it.
+    rate_limited: bool = False
+    rate_limit_resets_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -341,6 +347,7 @@ def run_claude_prompt(
             tool_access=tool_access,
             duration_s=duration_s,
         )
+        rate_limited, rate_limit_resets_at = _extract_rate_limit(raw_stdout)
         result = ClaudeResult(
             returncode=completed.returncode,
             timed_out=False,
@@ -352,11 +359,14 @@ def run_claude_prompt(
             tool_access=tool_access,
             duration_s=duration_s,
             metrics=metrics,
+            rate_limited=rate_limited,
+            rate_limit_resets_at=rate_limit_resets_at,
         )
     except subprocess.TimeoutExpired as exc:
         raw_stdout = _coerce(exc.stdout)
         tool_access = _extract_claude_tool_access(raw_stdout, cwd=prepared.extract_cwd)
         duration_s = time.time() - started
+        rate_limited, rate_limit_resets_at = _extract_rate_limit(raw_stdout)
         result = ClaudeResult(
             returncode=None,
             timed_out=True,
@@ -372,6 +382,8 @@ def run_claude_prompt(
                 tool_access=tool_access,
                 duration_s=duration_s,
             ),
+            rate_limited=rate_limited,
+            rate_limit_resets_at=rate_limit_resets_at,
         )
 
     _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
@@ -604,6 +616,44 @@ def _extract_claude_tool_access(
         "files_read": dict(sorted(files_read.items())),
         "files_written": dict(sorted(files_written.items())),
     }
+
+
+def _extract_rate_limit(raw_stdout: str) -> tuple[bool, float | None]:
+    """Detect an Anthropic usage-limit rejection in a stream-json transcript.
+
+    Returns ``(rate_limited, resets_at_epoch_or_None)``. Triggers on:
+      * ``{"type":"result", "is_error":true, "api_error_status":429, ...}``
+        (or a ``result`` text containing "hit your limit"), and/or
+      * ``{"type":"rate_limit_event", "rate_limit_info":{"status":"rejected",
+        "resetsAt":<epoch>, ...}}``.
+    """
+
+    rate_limited = False
+    resets_at: float | None = None
+    for event in _jsonl_events(raw_stdout):
+        et = str(event.get("type") or "")
+        if et == "result" and event.get("is_error"):
+            status = event.get("api_error_status")
+            text = event.get("result")
+            if status == 429 or (
+                isinstance(text, str) and "hit your limit" in text.lower()
+            ):
+                rate_limited = True
+        elif et == "rate_limit_event":
+            info = event.get("rate_limit_info")
+            if isinstance(info, dict):
+                status = str(info.get("status") or "").lower()
+                overage = str(info.get("overageStatus") or "").lower()
+                if status == "rejected" or overage == "rejected":
+                    rate_limited = True
+                raw_reset = info.get("resetsAt")
+                if isinstance(raw_reset, (int, float)) and raw_reset > 0:
+                    resets_at = (
+                        float(raw_reset)
+                        if resets_at is None
+                        else max(resets_at, float(raw_reset))
+                    )
+    return rate_limited, resets_at
 
 
 def _jsonl_events(raw_stdout: str) -> list[dict[str, Any]]:
@@ -1116,6 +1166,8 @@ def _write_logs(result: ClaudeResult, *, log_dir: Path, name: str, prompt: str) 
     meta = {
         "returncode": result.returncode,
         "timed_out": result.timed_out,
+        "rate_limited": result.rate_limited,
+        "rate_limit_resets_at": result.rate_limit_resets_at,
         "command": list(result.command),
         "usage": result.usage,
         "tool_access": result.tool_access,

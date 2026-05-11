@@ -1,0 +1,19 @@
+# Bump the bundled Claude Code CLI inside docker-claude:latest so the
+# proposer container runs the same version as the host (2.1.138, which
+# knows about Opus 4.7). The original image was built six weeks ago with
+# `npm install -g @anthropic-ai/claude-code@latest` and pinned via
+# DISABLE_AUTOUPDATER=1, so the only way to upgrade is an explicit
+# reinstall.
+#
+# Rebuild:
+#   docker build -t docker-claude:2.1.138 -t docker-claude:latest \
+#     -f docker/Dockerfile.claude_2_1_138 docker/
+#
+# After the build, a smoke check should print "2.1.138 (Claude Code)":
+#   docker run --rm docker-claude:latest claude --version
+FROM docker-claude:latest
+
+ENV DISABLE_AUTOUPDATER=1
+
+RUN npm install -g @anthropic-ai/claude-code@2.1.138 \
+    && claude --version
