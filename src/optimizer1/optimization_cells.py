@@ -165,6 +165,103 @@ MINI_SWE_AGENT_OPTIMIZATION_CELLS = {
 }
 
 
+TERMINUS_TARGET = "terminus_kira_source"
+
+TERMINUS_OPTIMIZATION_CELLS = {
+    "prompt_and_bootstrap": OptimizationCell(
+        name="prompt_and_bootstrap",
+        target_system=TERMINUS_TARGET,
+        description=(
+            "Optimize the system prompt and the initial context handed to the agent "
+            "— including bootstrapping a snapshot of the sandbox environment before "
+            "the agent loop starts."
+        ),
+        focus_functions=(
+            "AgentHarness.run",
+            "Terminus2._get_prompt_template_path",
+            "Terminus2._get_completion_confirmation_message",
+            "prompt-templates/terminus-kira.txt",
+        ),
+        prompt_guidance=(
+            "Focus on what the agent sees before and during the run: a richer system "
+            "prompt, an environment snapshot (cwd, file listing, available languages / "
+            "tools / package managers, memory) injected into the initial message, or a "
+            "better completion-confirmation checklist. General guidance only — no "
+            "task-specific hints, never reference task names."
+        ),
+    ),
+    "tool_interface": OptimizationCell(
+        name="tool_interface",
+        target_system=TERMINUS_TARGET,
+        description=(
+            "Optimize the native tool schema and the LLM call — tool definitions, new "
+            "tools, reasoning effort, retries, parsing of tool calls into commands."
+        ),
+        focus_functions=(
+            "Terminus2._call_llm_with_tools",
+            "Terminus2._parse_tool_calls",
+            "Terminus2._extract_tool_calls",
+            "Terminus2._handle_llm_interaction",
+            "TOOLS",
+        ),
+        prompt_guidance=(
+            "Focus on the agent's action interface: clearer or additional tools, "
+            "stricter argument validation, smarter retry/backoff on transient errors, "
+            "or reasoning-effort tuning. One mechanism per candidate."
+        ),
+    ),
+    "command_execution": OptimizationCell(
+        name="command_execution",
+        target_system=TERMINUS_TARGET,
+        description=(
+            "Optimize how commands run on the terminal and how their output is fed "
+            "back — polling, marker-based early completion, output truncation, image "
+            "reads."
+        ),
+        focus_functions=(
+            "Terminus2._execute_commands",
+            "Terminus2._limit_output_length",
+            "Terminus2._execute_image_read",
+        ),
+        prompt_guidance=(
+            "Focus on the execute→observe loop: adaptive command durations, early-exit "
+            "polling, smarter truncation that preserves the signal-bearing tail, or "
+            "handling of non-text artifacts. Avoid pure scalar tuning of timeouts."
+        ),
+    ),
+    "episode_control": OptimizationCell(
+        name="episode_control",
+        target_system=TERMINUS_TARGET,
+        description=(
+            "Optimize the episode loop, context summarization on overflow, proactive "
+            "summarization, and handoff between summarized segments."
+        ),
+        focus_functions=(
+            "Terminus2._run_agent_loop",
+            "Terminus2._summarize_context",
+            "Terminus2._check_proactive_summarization",
+            "Terminus2._unwind_messages_to_free_tokens",
+        ),
+        prompt_guidance=(
+            "Focus on long-horizon control: when to summarize, what to keep across a "
+            "summarization boundary, how to structure the episode loop, and how to "
+            "recover from context-length and output-length errors."
+        ),
+    ),
+    "all": OptimizationCell(
+        name="all",
+        target_system=TERMINUS_TARGET,
+        description="Global redesign / fusion across the Terminus agent control loop.",
+        focus_functions=(),
+        prompt_guidance=(
+            "You may combine prompt/bootstrap, tool interface, command execution, and "
+            "episode control when the interaction between them is the mechanism. Still "
+            "one falsifiable hypothesis per candidate."
+        ),
+    ),
+}
+
+
 GRAPH_COLOURING_TARGET = "graph_colouring_source"
 
 GRAPH_COLOURING_OPTIMIZATION_CELLS = {
@@ -253,6 +350,17 @@ def _is_graph_colouring_target(target: str) -> bool:
     }
 
 
+def _is_terminus_target(target: str) -> bool:
+    return target in {
+        TERMINUS_TARGET,
+        "terminus",
+        "terminus_kira",
+        "terminuskira",
+        "terminal_bench",
+        "terminalbench",
+    }
+
+
 def get_target_cells(target_system: str) -> list[OptimizationCell]:
     """Return optimization cells for the requested target system."""
 
@@ -263,6 +371,8 @@ def get_target_cells(target_system: str) -> list[OptimizationCell]:
         return list(MINI_SWE_AGENT_OPTIMIZATION_CELLS.values())
     if _is_graph_colouring_target(normalized):
         return list(GRAPH_COLOURING_OPTIMIZATION_CELLS.values())
+    if _is_terminus_target(normalized):
+        return list(TERMINUS_OPTIMIZATION_CELLS.values())
     return []
 
 
@@ -276,6 +386,8 @@ def get_cell(name: str, target_system: str = "memgpt") -> OptimizationCell:
         cells = MINI_SWE_AGENT_OPTIMIZATION_CELLS
     elif _is_graph_colouring_target(normalized):
         cells = GRAPH_COLOURING_OPTIMIZATION_CELLS
+    elif _is_terminus_target(normalized):
+        cells = TERMINUS_OPTIMIZATION_CELLS
     else:
         raise KeyError(f"unknown target system: {target_system}")
     try:

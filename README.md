@@ -4,11 +4,13 @@ Optimizer1 is a benchmark-specific agent-evolution harness. It runs a
 proposer code agent (Claude Code) inside a Docker sandbox, lets it edit a
 memory or solver scaffold, evaluates the resulting candidate, and iterates.
 
-The package is scoped to three benchmarks:
+The package is scoped to four benchmarks:
 
 - **LoCoMo** conversational-memory QA
 - **LongMemEval** long-context memory QA (variant `s` by default)
 - **SWE-bench mini** code-repair (`mini-swe-agent` solver)
+- **Terminal-Bench 2.0** long-horizon terminal tasks (Terminus-KIRA agent
+  scaffold, Harbor-backed) — see [Terminal-Bench 2.0](#terminal-bench-20-terminus) below
 
 Two objective axes are tracked: `passrate` (maximize) and `token_consuming`
 (minimize). `average_score` is logged as a diagnostic. Every run emits a
@@ -188,6 +190,67 @@ compaction). Source family for evolution is `memgpt`. Reference upstream:
 For SWE-bench mini, the source backend is `mini_swe_agent_source`,
 selected via `--swebench`. Pass `--mini-swe-agent-source-path` if your
 checkout lives outside the default location.
+
+For Terminal-Bench 2.0, the source backend is `terminus_kira_source`,
+selected via `--terminus`. See [Terminal-Bench 2.0](#terminal-bench-20-terminus).
+
+## Terminal-Bench 2.0 (Terminus)
+
+The `--terminus` target evolves an **agent scaffold** for
+[Terminal-Bench 2.0](https://tbench.ai): a single Python file under
+`agents/<name>.py` in the vendored `terminal_bench_2` reference project
+(`references/vendor/meta-harness/reference_examples/terminal_bench_2/`) that
+subclasses `harbor.agents.terminus_2.terminus_2.Terminus2`, seeded from
+[Terminus-KIRA](https://github.com/krafton-ai/KIRA) (`agents/baseline_kira.py`).
+This is the same setup as the [Meta-Harness](https://github.com/stanford-iris-lab/meta-harness)
+TB2 reference experiment; the only deliberate deviations are: (1) the search
+algorithm is **Optimal1** (pareto base resampling + `--diagnose` + trace MCP +
+historian) instead of the plain propose→eval loop, (2) the Terminus base model
+is **DeepSeek v4 Pro** at high (`max`) reasoning effort instead of Claude Opus
+4.6, and (3) rollouts run in Harbor's local `docker` environment instead of
+`runloop`.
+
+Rollouts are driven by [Harbor](https://github.com/harbor-framework) — install
+the optional extra so `harbor` is on PATH:
+
+```bash
+python -m pip install -e '.[dev,terminus]'
+```
+
+Splits: `--split train` uses the 30-task `hard` subset (the cheap development
+split from meta-harness's `run_eval.sh`); `--split test` uses the other 59 TB2
+tasks and needs the full task list (`--terminus-test-tasks task1,task2,...` or a
+`--terminus-tasks-path` JSON of `{"all": [...]}`).
+
+Side-by-side launch (claudekimi proposer in docker, DeepSeek v4 Pro solver):
+
+```bash
+ARMS=baseline,optimal1 ITERATIONS=10 \
+scripts/launch_terminus_baseline_vs_optimal1.sh
+```
+
+Manual invocation:
+
+```bash
+python -m optimizer1.cli optimize \
+  --terminus \
+  --run-id terminus_kira_optimal1 \
+  --iterations 10 \
+  --split train \
+  --terminus-solver-model openai/deepseek-v4-pro \
+  --terminus-solver-base-url https://api.deepseek.com/v1 \
+  --terminus-solver-api-key-env DEEPSEEK_API_KEY \
+  --terminus-reasoning-effort high \
+  --terminus-rollout-trials 2 \
+  --terminus-rollout-concurrency 12 \
+  --proposer-agent kimi --proposer-sandbox docker \
+  --proposer-docker-image docker-claude-kimi:latest \
+  --proposer-docker-home /tmp --proposer-docker-env KIMI_API_KEY \
+  --selection-policy pareto --diagnose
+```
+
+Per-candidate harbor jobs land under `runs/<run-id>/terminus_jobs/<candidate_id>/`;
+stdout/stderr/meta for each `harbor run` land under `runs/<run-id>/terminus_logs/`.
 
 ## Documentation
 

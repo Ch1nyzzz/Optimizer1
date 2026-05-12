@@ -10,6 +10,7 @@ from typing import Any
 
 from optimizer1.benchmark_workspaces import BenchmarkWorkspaceSpec, SWEBENCH_WORKSPACE_SPEC
 from optimizer1.optimizer import LocomoOptimizer, OptimizerConfig
+from optimizer1.pareto import ParetoPoint, save_frontier
 from optimizer1.schemas import CandidateResult
 from optimizer1.swebench import (
     DEFAULT_MINI_SWE_AGENT_NAME,
@@ -71,6 +72,141 @@ class SwebenchOptimizer(LocomoOptimizer):
 
     def _raw_data_policy_name(self) -> str:
         return "SWE-bench gold patches, test patches, and evaluation results"
+
+    def _run_test_frontier(self, candidates: list[CandidateResult]) -> dict[str, Any]:
+        full_frontier = self._quality_frontier(candidates)
+        candidate_limit = max(0, int(self.config.test_frontier_candidate_limit or 0))
+        frontier = full_frontier[:candidate_limit] if candidate_limit else full_frontier
+        test_dir = self.run_dir / "test_frontier"
+        specs_dir = test_dir / "candidate_specs"
+        specs_dir.mkdir(parents=True, exist_ok=True)
+        examples = load_swebench_instances(
+            self.config.data_path,
+            split=self.config.test_split,
+            limit=self.config.test_limit,
+        )
+        runner = MiniSweAgentSourceRunner(
+            instances=examples,
+            out_dir=test_dir,
+            timeout_s=self.config.eval_timeout_s,
+            max_eval_workers=self.config.max_eval_workers,
+            dry_run=self.config.dry_run,
+            force=self.config.force,
+        )
+
+        rows: list[dict[str, Any]] = []
+        test_results: list[CandidateResult] = []
+        failures: list[dict[str, Any]] = []
+        for candidate in frontier:
+            spec = self._swebench_test_spec(candidate)
+            spec_path = specs_dir / f"{spec['candidate_id']}.json"
+            spec_path.write_text(
+                json.dumps(spec, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            try:
+                result = runner.evaluate_candidate(
+                    candidate=spec,
+                    candidate_id=str(spec["candidate_id"]),
+                    agent_name=str(spec.get("agent_name") or DEFAULT_MINI_SWE_AGENT_NAME),
+                )
+            except Exception as exc:  # noqa: BLE001 - keep testing the rest of the frontier
+                failure = {
+                    "original_candidate_id": candidate.candidate_id,
+                    "test_candidate_id": spec["candidate_id"],
+                    "candidate_spec_path": str(spec_path),
+                    "error": str(exc),
+                }
+                failures.append(failure)
+                rows.append(
+                    {
+                        "original_candidate": candidate.to_dict(),
+                        "candidate_spec_path": str(spec_path),
+                        "error": str(exc),
+                    }
+                )
+                self._append_event({"event": "test_frontier_candidate_failed", **failure})
+                continue
+
+            test_results.append(result)
+            rows.append(
+                {
+                    "original_candidate": candidate.to_dict(),
+                    "candidate_spec_path": str(spec_path),
+                    "test_candidate": result.to_dict(),
+                }
+            )
+
+        results_path = test_dir / "test_results.json"
+        results_path.write_text(
+            json.dumps(rows, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        test_frontier_path = test_dir / "test_pareto_frontier.json"
+        save_frontier(
+            test_frontier_path,
+            [
+                ParetoPoint(
+                    candidate_id=item.candidate_id,
+                    scaffold_name=item.scaffold_name,
+                    passrate=item.passrate,
+                    token_consuming=item.token_consuming,
+                    avg_token_consuming=item.avg_token_consuming,
+                    average_score=item.average_score,
+                    result_path=item.result_path,
+                    config=item.config,
+                )
+                for item in test_results
+            ],
+            quality_gap_threshold=self.config.pareto_quality_threshold,
+        )
+        summary = {
+            "benchmark": "swebench",
+            "split": self.config.test_split,
+            "limit": self.config.test_limit,
+            "count": len(examples),
+            "train_frontier_total_count": len(full_frontier),
+            "candidate_limit": candidate_limit,
+            "train_frontier_count": len(frontier),
+            "evaluated_count": len(test_results),
+            "failed_count": len(failures),
+            "test_dir": str(test_dir),
+            "test_results_path": str(results_path),
+            "test_pareto_frontier_path": str(test_frontier_path),
+            "candidate_spec_dir": str(specs_dir),
+            "failures": failures,
+        }
+        summary_path = self.run_dir / "test_frontier_summary.json"
+        summary_path.write_text(
+            json.dumps(summary, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        summary["summary_path"] = str(summary_path)
+        return summary
+
+    def _swebench_test_spec(self, candidate: CandidateResult) -> dict[str, Any]:
+        config = dict(candidate.config) if isinstance(candidate.config, dict) else {}
+        extra = config.get("extra") if isinstance(config.get("extra"), dict) else {}
+        spec = dict(config)
+        spec["candidate_id"] = self._test_candidate_id(candidate.candidate_id)
+        spec["original_candidate_id"] = candidate.candidate_id
+        spec["agent_name"] = str(
+            spec.get("agent_name")
+            or spec.get("scaffold_name")
+            or candidate.scaffold_name
+            or DEFAULT_MINI_SWE_AGENT_NAME
+        )
+        spec["scaffold_name"] = DEFAULT_MINI_SWE_AGENT_NAME
+        spec["source_family"] = DEFAULT_MINI_SWE_AGENT_NAME
+        if "name" not in spec:
+            spec["name"] = candidate.scaffold_name or DEFAULT_MINI_SWE_AGENT_NAME
+        if "source_project_path" not in spec and extra.get("source_project_path"):
+            spec["source_project_path"] = str(extra["source_project_path"])
+        if "source_project_path" not in spec:
+            spec["source_project_path"] = str(self.config.mini_swe_agent_source_path)
+        spec.setdefault("command", self.config.mini_swe_agent_command)
+        spec.setdefault("eval_command", self.config.mini_swe_agent_eval_command)
+        return spec
 
     def _evaluate_proposed(
         self,

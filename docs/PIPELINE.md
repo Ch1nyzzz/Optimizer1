@@ -10,7 +10,29 @@ reading it you should be able to:
 2. Tell Optimal1 apart from the meta-harness baseline at a CLI-flag level;
 3. Make an informed choice among the underlying selection policies;
 4. Reproduce or extend the existing results on LoCoMo / LongMemEval /
-   SWE-bench mini.
+   SWE-bench mini / Terminal-Bench 2.0.
+
+> **Terminal-Bench 2.0 (`--terminus`)** is the fourth benchmark target and
+> a structural twin of SWE-bench mini: the proposer evolves a source-backed
+> agent scaffold (`terminus_kira_source`, seeded from Terminus-KIRA inside
+> the vendored `terminal_bench_2` reference project), and the candidate is
+> scored by running Harbor on `terminal-bench@2.0` (train = the 30-task
+> `hard` subset, test = the other 59 tasks; passrate × token_consuming over
+> tasks × attempts). The outer loop, all selection policies, the diagnoser
+> and historian subagents, and the trace MCP tools are inherited unchanged
+> from `LocomoOptimizer` via `TerminusOptimizer`, so the meta-harness
+> baseline arm (`--selection-policy default --proposer-no-trace-harness-section`)
+> and the Optimal1 arm (`--selection-policy pareto --diagnose`) work exactly
+> as they do for the other targets. The deliberate deviations from the
+> upstream meta-harness TB2 experiment are: the search algorithm (Optimal1
+> vs the plain propose→eval loop), the Terminus base model (DeepSeek v4 Pro
+> at high reasoning effort vs Claude Opus 4.6), and the rollout sandbox
+> (Harbor's local `docker` env vs `runloop`). The terminus optimization
+> cells (`prompt_and_bootstrap`, `tool_interface`, `command_execution`,
+> `episode_control`, `all`) port the SKILL.md proposer prior onto the
+> overridable `Terminus2` methods. Headline results are pending — the first
+> KIRA baseline run on the `hard` split calibrates per-rollout cost and
+> wall-clock before a full Optimal1 vs baseline comparison.
 
 Per-cell result tables live in
 [`experiment_detail.md`](experiment_detail.md); cross-run observations

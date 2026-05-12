@@ -87,7 +87,9 @@ prepare_proposer_home() {
   # and bind that dir to /home/yuhan:rw. The container then has its own
   # writable HOME, while the host login is untouched. Refresh-token
   # updates inside the container persist for subsequent iterations
-  # because every iter sees the same STAGE_HOME.
+  # because every iter sees the same STAGE_HOME, and the optimizer also
+  # re-syncs this dir's .credentials.json from ~/.claude before every
+  # proposer call (so a long rate-limit wait can't leave it expired).
   local run_id="$1"
   local stage="/tmp/optimizer1_native_proposer_${run_id}"
   rm -rf "$stage"

@@ -29,3 +29,7 @@ references/vendor/graph-colouring/
 .last_*_ts
 
 tests/
+
+# harbor job outputs if a terminus run is launched from inside the vendored project
+references/vendor/**/terminal_bench_2/runs/
+references/vendor/**/terminal_bench_2/jobs/

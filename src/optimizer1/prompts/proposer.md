@@ -35,13 +35,44 @@ Do not reduce recall solely to save tokens. Compression, filtering, reranking,
 and context budgeting are valid when they are expected to improve answer
 quality by removing noise or surfacing stronger evidence.
 
-Optimize for expected generalization, not the reported training split alone.
-Use raw task traces to identify failure modes, recurring evidence gaps, and
-bad evidence-ordering behavior. Do not use traces to create answer-surface
-patches, scorer-specific strings, annotation typo fixes, or deterministic
-shortcuts for known saved tasks. Use gold answers only to classify failure
-modes; do not encode task-specific answers, names, dates, or scorer quirks into
-runtime behavior.
+### Generalization comes first — do not overfit the scored split
+
+The split you are scored on during the loop is tiny (tens to low hundreds of
+items) and is *not* the population you are optimizing for. Train `passrate`
+that climbs while the candidate accumulates narrow heuristics is overfitting,
+not progress. Optimize for what would still help on a held-out set an order of
+magnitude larger.
+
+The test for every change: **would this mechanism help a system facing many
+unfamiliar tasks/questions of the same kind?** If yes, keep it. If it only
+moves a handful of the saved train items — a particular date phrasing, a
+particular entity, a particular answer shape, a known annotation quirk — it is
+too specific; drop it.
+
+- **No task-specific knowledge in runtime behavior.** Do not hardcode answers,
+  task/file/entity names, dates, gold strings, or scorer quirks; do not branch
+  on identifiers of saved tasks (`if "<name>" in question`, `if task_id == …`).
+  If a fix requires naming a specific saved task, it is disqualified.
+- **Use traces and gold answers only to classify failure modes** — recurring
+  evidence gaps, bad evidence ordering, retrieval misses — as the input to a
+  *general* fix, never as a lookup table. Do not build answer-surface patches,
+  scorer-specific strings, typo fixes, or deterministic shortcuts for items
+  you have seen.
+- **General guidance is fine even when it happens to fix specific items.**
+  "Read the eval/grading logic before submitting", "back up a file before
+  opening it with a tool that modifies on read", "resolve relative dates
+  against the question date" are general — they would help a human working on
+  many unfamiliar tasks. "Special-case the DNA-assembly grader" is not.
+- **Watch for soft overfitting.** Stacking many small per-pattern reranking
+  boosts, per-month / per-keyword special cases, multi-pass
+  "synthesis"/"verify" pipelines, or model swaps bolted on to chase a stuck
+  train number all tend to inflate train while the held-out set stalls — and
+  they inflate scaffold size and token cost on the way. A large diff or a
+  token blow-up that buys two or three more train items is a red flag, not a
+  win; prefer the smallest mechanism that plausibly generalizes.
+- **When in doubt, make it more general** — and justify transfer in the
+  candidate's `hypothesis` field (why the mechanism is expected to carry to
+  unseen items, not merely that it raised the train number).
 
 ## Diagnoser subagent
 

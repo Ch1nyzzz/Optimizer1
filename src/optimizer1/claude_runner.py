@@ -19,7 +19,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 CLAUDE_EXECUTABLE = "claude"
@@ -38,7 +38,11 @@ DEFAULT_DOCKER_ENV_VARS = (
     "DEEPSEEK_API_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
     "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "DIFF_EMBEDDING_MODEL",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
@@ -110,6 +114,7 @@ def _prepare_agent_command(
     *,
     cwd: Path,
     sandbox: ProposerSandboxConfig | None,
+    env: Mapping[str, str] | None = None,
 ) -> _PreparedAgentCommand:
     if sandbox is None or sandbox.kind.strip().lower() == "none":
         return _PreparedAgentCommand(command=command, run_cwd=cwd, extract_cwd=cwd)
@@ -156,8 +161,9 @@ def _prepare_agent_command(
         docker_parts.extend(["--user", sandbox.docker_user.strip()])
     if sandbox.docker_home.strip():
         docker_parts.extend(["-e", f"HOME={sandbox.docker_home.strip()}"])
+    env_lookup = env if env is not None else os.environ
     for env_name in _dedupe_strings(sandbox.docker_env_vars):
-        if env_name in os.environ:
+        if env_name in env_lookup:
             docker_parts.extend(["-e", env_name])
     for mount in sandbox.docker_mounts:
         mount_arg = _normalize_docker_mount(mount)
@@ -204,6 +210,7 @@ def run_code_agent_prompt(
     log_dir: Path,
     name: str,
     model: str,
+    effort: str = "",
     timeout_s: int = 2400,
     sandbox: ProposerSandboxConfig | None = None,
     claude_base_url: str | None = None,
@@ -236,6 +243,7 @@ def run_code_agent_prompt(
         log_dir=log_dir,
         name=name,
         model=model,
+        effort=effort,
         timeout_s=timeout_s,
         sandbox=sandbox,
         base_url=claude_base_url,
@@ -252,6 +260,7 @@ def run_claude_prompt(
     log_dir: Path,
     name: str,
     model: str = DEFAULT_CLAUDE_MODEL,
+    effort: str = "",
     timeout_s: int = 2400,
     sandbox: ProposerSandboxConfig | None = None,
     base_url: str | None = None,
@@ -283,11 +292,18 @@ def run_claude_prompt(
     cwd = cwd.resolve(strict=False)
     command = _claude_command(
         model=model,
+        effort=effort,
         agent_name=agent_name,
     )
     log_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
-    prepared = _prepare_agent_command(command, cwd=cwd, sandbox=sandbox)
+    env = _claude_env(
+        base_url=base_url,
+        auth_token=auth_token,
+        model=model,
+        native_auth=native_auth,
+    )
+    prepared = _prepare_agent_command(command, cwd=cwd, sandbox=sandbox, env=env)
 
     if prepared.error:
         result = ClaudeResult(
@@ -320,13 +336,6 @@ def run_claude_prompt(
         )
         _write_logs(result, log_dir=log_dir, name=name, prompt=prompt)
         return result
-
-    env = _claude_env(
-        base_url=base_url,
-        auth_token=auth_token,
-        model=model,
-        native_auth=native_auth,
-    )
 
     try:
         completed = subprocess.run(
@@ -393,6 +402,7 @@ def run_claude_prompt(
 def _claude_command(
     *,
     model: str,
+    effort: str = "",
     agent_name: str | None = None,
 ) -> tuple[str, ...]:
     parts: list[str] = [
@@ -406,6 +416,8 @@ def _claude_command(
     ]
     if model:
         parts.extend(["--model", model])
+    if effort:
+        parts.extend(["--effort", effort])
     if agent_name:
         parts.extend(["--agent", agent_name])
     return tuple(parts)

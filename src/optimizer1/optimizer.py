@@ -73,6 +73,7 @@ class OptimizerConfig:
     eval_timeout_s: int = 300
     proposer_agent: str = "claude"
     claude_model: str = "deepseek-v4-pro[1m]"
+    claude_effort: str = ""
     claude_base_url: str = "https://api.deepseek.com/anthropic"
     claude_auth_token: str | None = None
     claude_native_auth: bool = False
@@ -1564,6 +1565,7 @@ class LocomoOptimizer:
             timeout_s=self.config.propose_timeout_s,
             sandbox=self._proposer_sandbox_config(),
             model=self.config.claude_model,
+            effort=self.config.claude_effort,
             claude_base_url=self.config.claude_base_url,
             claude_auth_token=self.config.claude_auth_token,
             claude_native_auth=self.config.claude_native_auth,
@@ -1578,6 +1580,12 @@ class LocomoOptimizer:
 
         retries = 0
         while True:
+            # Re-sync the docker proposer's staged Claude OAuth credentials
+            # with the host's before every attempt. Crucial after a long
+            # rate-limit wait: the per-run STAGE_HOME copy made at launch
+            # time would otherwise have expired (→ 401 cascade) while we
+            # slept out the 429 window.
+            self._refresh_native_auth_credentials()
             result = run_code_agent_prompt(prompt, agent=agent, **kwargs)
             if not (
                 self.config.wait_on_rate_limit
@@ -1643,6 +1651,66 @@ class LocomoOptimizer:
                     f"~{remaining / 60:.1f} min left",
                     flush=True,
                 )
+
+    def _native_auth_stage_home(self) -> Path | None:
+        """Locate the host directory bind-mounted at the docker proposer's
+        ``$HOME`` under ``--claude-native-auth``.
+
+        That directory holds the per-run copy of ``~/.claude.json`` +
+        ``~/.claude/.credentials.json`` (see the launch script's
+        ``prepare_proposer_home``); identifying it lets us keep the staged
+        OAuth credentials in sync with the host's. Returns ``None`` when
+        native auth is off, the proposer is not sandboxed in docker, or no
+        mount targets the container ``$HOME``."""
+
+        if not self.config.claude_native_auth:
+            return None
+        if self.config.proposer_sandbox.strip().lower() != "docker":
+            return None
+        home = (self.config.proposer_docker_home or "").rstrip("/")
+        if not home:
+            return None
+        found: Path | None = None
+        for spec in self.config.proposer_docker_mount:
+            parts = str(spec).split(":")
+            if len(parts) < 2 or not parts[0]:
+                continue
+            if parts[1].rstrip("/") == home:
+                found = Path(parts[0])  # last mount wins, matching docker
+        return found
+
+    def _refresh_native_auth_credentials(self) -> None:
+        """Copy the host's current ``~/.claude/.credentials.json`` into the
+        docker proposer's staged ``$HOME`` so a token the host CLI has since
+        rotated/refreshed is the one the container sees.
+
+        No-op unless ``--claude-native-auth`` + a docker proposer with a
+        mount at the container ``$HOME``. Best-effort: a transient read/copy
+        failure is logged and swallowed (the proposer call then fails/retries
+        exactly as it would have without this sync)."""
+
+        stage = self._native_auth_stage_home()
+        if stage is None:
+            return
+        host_creds = Path.home() / ".claude" / ".credentials.json"
+        if not host_creds.is_file():
+            return
+        dst = stage / ".claude" / ".credentials.json"
+        try:
+            if dst.is_file() and dst.read_bytes() == host_creds.read_bytes():
+                return
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(host_creds, dst)
+            dst.chmod(0o600)
+        except OSError as exc:
+            self._append_event(
+                {
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "event": "native_auth_refresh_failed",
+                    "stage_home": str(stage),
+                    "error": repr(exc),
+                }
+            )
 
     def _proposer_sandbox_config(self) -> ProposerSandboxConfig | None:
         kind = self.config.proposer_sandbox.strip().lower()

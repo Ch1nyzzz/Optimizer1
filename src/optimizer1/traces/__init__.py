@@ -47,11 +47,13 @@ from .adapters.longmemeval import LongMemEvalAdapter
 from .adapters.locomo import LocomoAdapter
 from .adapters.swebench import SwebenchAdapter
 from .adapters.graph_colouring import GraphColouringAdapter
+from .adapters.terminus import TerminusAdapter
 
 register_adapter(LongMemEvalAdapter())
 register_adapter(LocomoAdapter())
 register_adapter(SwebenchAdapter())
 register_adapter(GraphColouringAdapter())
+register_adapter(TerminusAdapter())
 
 __all__ = [
     "ALL_STATUSES",

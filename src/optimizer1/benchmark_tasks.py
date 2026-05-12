@@ -62,11 +62,22 @@ GRAPH_COLOURING_TASK = BenchmarkTaskSpec(
     description="Graph-colouring DIMACS benchmark over a source-backed C++ heuristic mutated by the proposer.",
 )
 
+TERMINUS_TASK = BenchmarkTaskSpec(
+    slug="terminus",
+    aliases=("terminal-bench", "terminal_bench", "terminal-bench-2", "tbench", "tb2"),
+    benchmark="terminus",
+    base_agent_system="terminus_kira_source",
+    optimizer_kind="terminal_agent",
+    default_run_id="terminus_kira_opt",
+    description="Terminal-Bench 2.0 long-horizon terminal tasks over a source-backed Terminus-KIRA agent scaffold (Harbor-backed).",
+)
+
 BENCHMARK_TASKS: tuple[BenchmarkTaskSpec, ...] = (
     LOCOMO_TASK,
     LONGMEMEVAL_TASK,
     SWEBENCH_TASK,
     GRAPH_COLOURING_TASK,
+    TERMINUS_TASK,
 )
 
 _TASK_BY_NAME = {

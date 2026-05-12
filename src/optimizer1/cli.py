@@ -42,6 +42,22 @@ from optimizer1.graph_colouring_optimizer import (
     GraphColouringOptimizer,
     GraphColouringOptimizerConfig,
 )
+from optimizer1.terminus import (
+    DEFAULT_TERMINUS_AGENT_TIMEOUT_MULTIPLIER,
+    DEFAULT_TERMINUS_CONCURRENCY,
+    DEFAULT_TERMINUS_DATASET,
+    DEFAULT_TERMINUS_ENV,
+    DEFAULT_TERMINUS_HARBOR_COMMAND,
+    DEFAULT_TERMINUS_JOB_TIMEOUT_S,
+    DEFAULT_TERMINUS_REASONING_EFFORT,
+    DEFAULT_TERMINUS_SOLVER_API_KEY_ENV,
+    DEFAULT_TERMINUS_SOLVER_BASE_URL,
+    DEFAULT_TERMINUS_SOLVER_MODEL,
+    DEFAULT_TERMINUS_SOURCE_PATH,
+    DEFAULT_TERMINUS_TASKS_PATH,
+    DEFAULT_TERMINUS_TRIALS,
+)
+from optimizer1.terminus_optimizer import TerminusOptimizer, TerminusOptimizerConfig
 from optimizer1.scaffolds import (
     DEFAULT_BASELINE_SCAFFOLDS,
     DEFAULT_EVOLUTION_SEED_SCAFFOLDS,
@@ -236,6 +252,12 @@ def main() -> int:
         action="store_true",
         help="Optimize the graph-colouring DIMACS C++ heuristic benchmark.",
     )
+    task_flags.add_argument(
+        "--terminus",
+        dest="task_terminus",
+        action="store_true",
+        help="Optimize the Terminal-Bench 2.0 agent scaffold (Terminus-KIRA, Harbor-backed).",
+    )
     optimize.add_argument("--iterations", type=int, default=20)
     optimize.add_argument("--split", choices=("warmup", "train", "test"), default="train")
     optimize.add_argument("--limit", type=int, default=0)
@@ -262,6 +284,15 @@ def main() -> int:
             "Defaults to 'deepseek-v4-pro[1m]' (DeepSeek anthropic-compat "
             "endpoint, 1M context tier). With --claude-native-auth the "
             "default becomes empty so claude CLI picks its own model."
+        ),
+    )
+    optimize.add_argument(
+        "--claude-effort",
+        choices=("", "low", "medium", "high", "xhigh", "max"),
+        default="",
+        help=(
+            "Claude Code --effort level for proposer calls. Empty leaves the "
+            "CLI default unchanged; use 'max' for maximum thinking effort."
         ),
     )
     optimize.add_argument(
@@ -626,6 +657,99 @@ def main() -> int:
             "Empty = the curated default subset."
         ),
     )
+    optimize.add_argument(
+        "--terminus-source-path",
+        type=Path,
+        default=DEFAULT_TERMINUS_SOURCE_PATH,
+        help=(
+            "Path to the vendored terminal_bench_2 reference project (the agents/ "
+            "directory the proposer evolves). Defaults to "
+            "references/vendor/meta-harness/reference_examples/terminal_bench_2."
+        ),
+    )
+    optimize.add_argument(
+        "--terminus-tasks-path",
+        type=Path,
+        default=DEFAULT_TERMINUS_TASKS_PATH,
+        help=(
+            "JSON file listing the full Terminal-Bench 2.0 task ids, used to resolve "
+            "the `test` split (all tasks minus the 30 hard tasks). The `train` split "
+            "uses the 30 hard tasks regardless and needs no file."
+        ),
+    )
+    optimize.add_argument(
+        "--terminus-test-tasks",
+        default="",
+        help="Comma-separated TB2 task ids for the held-out test split (overrides --terminus-tasks-path).",
+    )
+    optimize.add_argument(
+        "--terminus-dataset",
+        default=DEFAULT_TERMINUS_DATASET,
+        help="Harbor dataset name@version (default: terminal-bench@2.0).",
+    )
+    optimize.add_argument(
+        "--terminus-env",
+        default=DEFAULT_TERMINUS_ENV,
+        help="Harbor environment type for rollouts (default: docker; e.g. runloop, daytona).",
+    )
+    optimize.add_argument(
+        "--terminus-harbor-command",
+        default=DEFAULT_TERMINUS_HARBOR_COMMAND,
+        help="Console command used to invoke Harbor (default: 'harbor'; it is a direct env dependency).",
+    )
+    optimize.add_argument(
+        "--terminus-solver-model",
+        default=DEFAULT_TERMINUS_SOLVER_MODEL,
+        help="litellm model id for the Terminus agent's base model (default: openai/deepseek-v4-pro).",
+    )
+    optimize.add_argument(
+        "--terminus-solver-base-url",
+        default=DEFAULT_TERMINUS_SOLVER_BASE_URL,
+        help="OpenAI-compatible base URL for the solver model (default: https://api.deepseek.com/v1).",
+    )
+    optimize.add_argument(
+        "--terminus-solver-api-key-env",
+        default=DEFAULT_TERMINUS_SOLVER_API_KEY_ENV,
+        help="Environment variable holding the solver API key (default: DEEPSEEK_API_KEY).",
+    )
+    optimize.add_argument(
+        "--terminus-reasoning-effort",
+        default=DEFAULT_TERMINUS_REASONING_EFFORT,
+        help="Reasoning effort passed to the solver model ('high' == max; '' to omit).",
+    )
+    optimize.add_argument(
+        "--terminus-rollout-trials",
+        type=int,
+        default=DEFAULT_TERMINUS_TRIALS,
+        help="Attempts per task during rollouts (default: 2, matching meta-harness).",
+    )
+    optimize.add_argument(
+        "--terminus-rollout-concurrency",
+        type=int,
+        default=DEFAULT_TERMINUS_CONCURRENCY,
+        help="Max concurrent harbor trials (default: 12 for a local docker box; raise for runloop).",
+    )
+    optimize.add_argument(
+        "--terminus-agent-timeout-multiplier",
+        type=float,
+        default=DEFAULT_TERMINUS_AGENT_TIMEOUT_MULTIPLIER,
+        help=(
+            "Multiplier on Harbor's per-task agent timeout (passed as "
+            "--agent-timeout-multiplier). Default 2.0 because DeepSeek v4 Pro at "
+            "high reasoning effort is slow; 0 keeps harbor's own default."
+        ),
+    )
+    optimize.add_argument(
+        "--terminus-job-timeout-s",
+        type=int,
+        default=DEFAULT_TERMINUS_JOB_TIMEOUT_S,
+        help="Wall-clock timeout for one harbor run (all tasks x trials of a candidate).",
+    )
+    optimize.add_argument(
+        "--terminus-no-secondary-baseline",
+        action="store_true",
+        help="Skip evaluating the secondary baseline (agents.baseline_terminus2) when seeding the frontier.",
+    )
     args = parser.parse_args()
     if args.command == "locomo" and args.locomo_command == "prepare":
         payload = prepare_locomo(
@@ -779,6 +903,7 @@ def main() -> int:
                     eval_timeout_s=args.eval_timeout_s,
                     proposer_agent=args.proposer_agent,
                     claude_model=args.claude_model,
+                    claude_effort=args.claude_effort,
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
                     claude_native_auth=args.claude_native_auth,
@@ -840,6 +965,79 @@ def main() -> int:
                     eval_timeout_s=args.eval_timeout_s,
                     proposer_agent=args.proposer_agent,
                     claude_model=args.claude_model,
+                    claude_effort=args.claude_effort,
+                    claude_base_url=args.claude_base_url,
+                    claude_auth_token=args.claude_auth_token,
+                    claude_native_auth=args.claude_native_auth,
+                    propose_timeout_s=args.propose_timeout_s,
+                    dry_run=args.dry_run,
+                    max_context_chars=args.max_context_chars,
+                    max_eval_workers=args.eval_workers,
+                    skip_scaffold_eval=args.skip_scaffold_eval,
+                    resume=args.resume,
+                    wait_on_rate_limit=args.wait_on_rate_limit,
+                    rate_limit_buffer_s=args.rate_limit_buffer_s,
+                    rate_limit_default_wait_s=args.rate_limit_default_wait_s,
+                    rate_limit_max_wait_s=args.rate_limit_max_wait_s,
+                    rate_limit_max_retries=args.rate_limit_max_retries,
+                    baseline_dir=args.baseline_dir,
+                    selection_policy=args.selection_policy,
+                    include_optimization_direction=args.include_optimization_direction,
+                    force_budget=args.force_budget,
+                    progressive_low_best_count=args.progressive_low_best_count,
+                    progressive_medium_best_count=args.progressive_medium_best_count,
+                    bandit_reward_window=args.bandit_reward_window,
+                    pareto_quality_threshold=args.pareto_quality_threshold,
+                    proposer_sandbox=args.proposer_sandbox,
+                    proposer_docker_image=args.proposer_docker_image,
+                    proposer_docker_workspace=args.proposer_docker_workspace,
+                    proposer_docker_env=tuple(_csv_many(args.proposer_docker_env)),
+                    proposer_docker_mount=tuple(args.proposer_docker_mount or ()),
+                    proposer_docker_user=args.proposer_docker_user,
+                    proposer_docker_home=args.proposer_docker_home,
+                    force=args.force,
+                    test_frontier=not args.no_test_frontier,
+                    test_limit=args.test_frontier_limit,
+                    test_frontier_candidate_limit=args.test_frontier_candidate_limit,
+                    trace_baseline_path=args.trace_baseline,
+                    proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
+                    diagnose=args.diagnose,
+                )
+            )
+            payload = optimizer.run()
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return 0
+
+        if selected_task == "terminus":
+            optimizer = TerminusOptimizer(
+                TerminusOptimizerConfig(
+                    run_id=run_id,
+                    out_dir=out_dir,
+                    iterations=args.iterations,
+                    split=args.split,
+                    limit=args.limit,
+                    tasks_path=args.terminus_tasks_path,
+                    test_tasks=tuple(_csv(args.terminus_test_tasks)),
+                    terminus_source_path=args.terminus_source_path,
+                    dataset=args.terminus_dataset,
+                    harbor_environment=args.terminus_env,
+                    harbor_command=args.terminus_harbor_command,
+                    solver_model=args.terminus_solver_model,
+                    solver_base_url=args.terminus_solver_base_url,
+                    solver_api_key_env=args.terminus_solver_api_key_env,
+                    reasoning_effort=args.terminus_reasoning_effort,
+                    rollout_trials=args.terminus_rollout_trials,
+                    rollout_concurrency=args.terminus_rollout_concurrency,
+                    agent_timeout_multiplier=args.terminus_agent_timeout_multiplier,
+                    job_timeout_s=args.terminus_job_timeout_s,
+                    include_secondary_baseline=not args.terminus_no_secondary_baseline,
+                    model=args.model,
+                    base_url=args.base_url,
+                    api_key=args.api_key,
+                    eval_timeout_s=args.eval_timeout_s,
+                    proposer_agent=args.proposer_agent,
+                    claude_model=args.claude_model,
+                    claude_effort=args.claude_effort,
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
                     claude_native_auth=args.claude_native_auth,
@@ -908,6 +1106,7 @@ def main() -> int:
                     eval_timeout_s=args.eval_timeout_s,
                     proposer_agent=args.proposer_agent,
                     claude_model=args.claude_model,
+                    claude_effort=args.claude_effort,
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
                     claude_native_auth=args.claude_native_auth,
@@ -966,6 +1165,7 @@ def main() -> int:
                 eval_timeout_s=args.eval_timeout_s,
                 proposer_agent=args.proposer_agent,
                 claude_model=args.claude_model,
+                claude_effort=args.claude_effort,
                 claude_base_url=args.claude_base_url,
                 claude_auth_token=args.claude_auth_token,
                 claude_native_auth=args.claude_native_auth,
@@ -1095,6 +1295,7 @@ def _optimize_task(args: argparse.Namespace) -> str:
             ("longmemeval", args.task_longmemeval),
             ("swebench", args.task_swebench),
             ("graph_colouring", args.task_graph_colouring),
+            ("terminus", args.task_terminus),
         )
         if enabled
     ]

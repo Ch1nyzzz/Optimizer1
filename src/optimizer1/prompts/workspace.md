@@ -7,13 +7,26 @@ file is project context, not identity.
 
 ## Quality Gate
 
-Before writing `pending_eval.json`, verify that the candidate is a real
-mechanism change, is not just a `top_k`/`window`/threshold/weight variant, does
-not use gold answers at inference time, does not hardcode benchmark-specific
-answers, and uses the isolated source snapshot for source edits.
-Parameter changes are allowed only as supporting details of a mechanism change.
-A candidate whose substantive change is only `top_k`, window size, thresholds,
-weights, prompt length, or context budget will be rejected.
+Before writing `pending_eval.json`, verify that the candidate:
+
+- is a real mechanism change, not just a `top_k` / window / threshold / weight /
+  prompt-length / context-budget variant — parameter changes are allowed only
+  as supporting details of a mechanism change, and a candidate whose
+  substantive change is only a parameter will be rejected;
+- does not use gold answers at inference time and does not hardcode
+  benchmark-specific answers, task / file / entity names, dates, gold strings,
+  or scorer quirks, and does not branch on identifiers of saved tasks;
+- would plausibly help a system facing many unfamiliar tasks/questions of the
+  same kind — not just the tens-to-hundreds of items in the scored split. A
+  change that only moves a handful of saved items, a stack of narrow
+  per-pattern boosts / special cases, a multi-pass "synthesis"/"verify"
+  pipeline, or a model swap added to chase a stuck train number is overfitting
+  and will be rejected even if train `passrate` rises;
+- keeps the diff and the token cost proportionate to the mechanism — a large
+  rewrite or a token blow-up that buys two or three more train items is a red
+  flag, not a win;
+- uses the isolated source snapshot for source edits.
+
 Run a lightweight syntax/import smoke check against the edited snapshot before
 writing `pending_eval.json`; do not run the full harness evaluation.
 

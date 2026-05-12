@@ -90,6 +90,26 @@ SWEBENCH_WORKSPACE_SPEC = BenchmarkWorkspaceSpec(
 )
 
 
+TERMINUS_WORKSPACE_SPEC = BenchmarkWorkspaceSpec(
+    benchmark="terminus",
+    primary_source_file="terminus.py",
+    source_files=(
+        "__init__.py",
+        "benchmark_tasks.py",
+        "benchmark_workspaces.py",
+        "claude_runner.py",
+        "model.py",
+        "optimizer.py",
+        "pareto.py",
+        "post_eval.py",
+        "proposer_prompt.py",
+        "schemas.py",
+        "terminus.py",
+        "terminus_optimizer.py",
+    ),
+)
+
+
 GRAPH_COLOURING_WORKSPACE_SPEC = BenchmarkWorkspaceSpec(
     benchmark="graph_colouring",
     primary_source_file="graph_colouring.py",
