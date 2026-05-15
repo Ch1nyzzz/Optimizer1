@@ -1,0 +1,1063 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Optimizer1 Organized Trace and Modification Report</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --ink: #1f2937;
+      --muted: #667085;
+      --line: #d9dee7;
+      --accent: #0f766e;
+      --accent-2: #334155;
+      --good: #087443;
+      --bad: #b42318;
+      --warn: #b54708;
+      --code: #f1f5f9;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      background: #111827;
+      color: #f9fafb;
+      padding: 42px 28px 34px;
+      border-bottom: 5px solid var(--accent);
+    }
+
+    header .wrap,
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 34px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 34px 0 14px;
+      font-size: 24px;
+      line-height: 1.25;
+      color: #111827;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+
+    h3 {
+      margin: 22px 0 10px;
+      font-size: 18px;
+      line-height: 1.3;
+      color: #111827;
+    }
+
+    p {
+      margin: 8px 0 12px;
+    }
+
+    main {
+      padding: 26px 28px 54px;
+    }
+
+    .subhead {
+      max-width: 920px;
+      color: #d1d5db;
+      font-size: 16px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .card strong {
+      display: block;
+      font-size: 22px;
+      line-height: 1.2;
+      margin-bottom: 5px;
+      color: #111827;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .tag {
+      display: inline-block;
+      border: 1px solid #99c7c0;
+      color: #115e59;
+      background: #ecfdf9;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-right: 6px;
+      white-space: nowrap;
+    }
+
+    .tag.warn {
+      border-color: #fed7aa;
+      color: #9a3412;
+      background: #fff7ed;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 12px 0 22px;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 11px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef2f7;
+      color: #111827;
+      font-weight: 700;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    code,
+    pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+
+    code {
+      background: var(--code);
+      border: 1px solid #e2e8f0;
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 13px;
+    }
+
+    pre {
+      background: #0f172a;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 14px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .delta-good {
+      color: var(--good);
+      font-weight: 700;
+    }
+
+    .delta-bad {
+      color: var(--bad);
+      font-weight: 700;
+    }
+
+    .delta-warn {
+      color: var(--warn);
+      font-weight: 700;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+    }
+
+    ul {
+      margin: 8px 0 16px 20px;
+      padding: 0;
+    }
+
+    li {
+      margin: 5px 0;
+    }
+
+    .note {
+      border-left: 4px solid var(--accent);
+      background: #f0fdfa;
+      padding: 12px 14px;
+      border-radius: 0 8px 8px 0;
+      margin: 14px 0 20px;
+    }
+
+    @media (max-width: 860px) {
+      .grid,
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Optimizer1 Organized Trace and Modification Management</h1>
+      <p class="subhead">
+        重点记录 organized optimizer 如何用 RunStore 管理 trace evidence 与 modification history，并对比 pure default no-trace 的状态组织、工具接口、实验参数和 LoCoMo / LongMemEval-S 结果。
+      </p>
+      <p class="subhead">生成时间：2026-05-15。所有分数来自本机 <code>runs/</code> 下的已完成 artifact。</p>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>1. Executive Summary</h2>
+      <div class="grid">
+        <div class="card">
+          <strong>LoCoMo test 最好</strong>
+          <span class="muted">organized-pareto-nohist fixedtools 达到 <b>0.3823</b>，高于 pure default no-trace 的 0.3616。</span>
+        </div>
+        <div class="card">
+          <strong>LongMemEval-S test 最好</strong>
+          <span class="muted">pure default no-trace 仍最高，test <b>0.5800</b>；organized-pareto-nohist 为 0.5500。</span>
+        </div>
+        <div class="card">
+          <strong>工具接入已生效</strong>
+          <span class="muted">修复后 organized 不再读 summaries，RunStore MCP calls 被记录；但模型仍大量读取 raw traces/reference。</span>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Benchmark</th>
+            <th>Variant</th>
+            <th class="num">Best train</th>
+            <th class="num">Best test</th>
+            <th class="num">vs pure default test</th>
+            <th>Best test candidate</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>LoCoMo</td>
+            <td>pure default no-trace</td>
+            <td class="num">0.4125</td>
+            <td class="num">0.3616</td>
+            <td class="num">baseline</td>
+            <td><code>iter049_temporal_mmr_v1_top8</code></td>
+          </tr>
+          <tr>
+            <td>LoCoMo</td>
+            <td>organized fixedtools</td>
+            <td class="num">0.4250</td>
+            <td class="num">0.3478</td>
+            <td class="num delta-bad">-0.0138</td>
+            <td><code>iter027_query_focused_evidence_v1_top8</code></td>
+          </tr>
+          <tr>
+            <td>LoCoMo</td>
+            <td>organized-pareto-nohist fixedtools</td>
+            <td class="num">0.4125</td>
+            <td class="num">0.3823</td>
+            <td class="num delta-good">+0.0207</td>
+            <td><code>iter049_temporal_fix_precise_top8</code></td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S</td>
+            <td>pure default no-trace</td>
+            <td class="num">0.6900</td>
+            <td class="num">0.5800</td>
+            <td class="num">baseline</td>
+            <td><code>iter042_weighted_overlap_mmr_top12</code></td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S</td>
+            <td>organized fixedtools</td>
+            <td class="num">0.5900</td>
+            <td class="num">0.5200</td>
+            <td class="num delta-bad">-0.0600</td>
+            <td><code>iter049_sentence_temporal_index_v1_top8</code></td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S</td>
+            <td>organized-pareto-nohist fixedtools</td>
+            <td class="num">0.7200</td>
+            <td class="num">0.5500</td>
+            <td class="num delta-bad">-0.0300</td>
+            <td><code>iter043_specificity_expand_no_window_widen_top8_top8</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note">
+        结论不是“organized 一定更强”，而是更具体：RunStore/state/tools 结构已经工作，LoCoMo 的 pareto/no-historian 组合提升了 test；LongMemEval-S 出现了明显 train 过拟合，pure default no-trace 的 top12 路线泛化更好。
+      </div>
+    </section>
+
+    <section>
+      <h2>2. Organized 如何管理 trace 与 modification</h2>
+      <p>
+        organized optimizer 的核心不是把更多历史文本塞进 prompt，而是把优化过程拆成两类结构化证据：一类回答“候选表现如何、哪些任务变好或变坏”，另一类回答“proposer 到底改了什么、什么时候改、改过哪些文件”。两类证据都写入同一个 RunStore，但通过不同工具命名空间暴露给 proposer。
+      </p>
+
+      <div class="two-col">
+        <div class="card">
+          <h3>Trace / evaluation evidence</h3>
+          <p class="muted">
+            这部分管理 evaluation side 的事实：iterations、candidates、task results、passrate、average score、token consuming、frontier 和 task-level outcome。它回答“某个 candidate 是否真的有效”。
+          </p>
+          <pre>RunStore tables:
+  iterations
+  candidates
+  task_results
+  frontier_members
+  state_snapshots
+
+Tools:
+  runstore_trace_iteration_meta
+  runstore_trace_candidate_outcome
+  runstore_trace_compare_iterations
+  runstore_trace_task_history
+  runstore_trace_frontier</pre>
+        </div>
+
+        <div class="card">
+          <h3>Modification evidence</h3>
+          <p class="muted">
+            这部分管理 proposer side 的事实：proposer call、diff、changed files、file access、proposal metadata 和相似修改。它回答“模型基于什么证据做了什么代码改变”。
+          </p>
+          <pre>RunStore tables:
+  proposer_calls
+  iteration_diffs
+  file_accesses
+  proposals
+  proposal_outcomes
+
+Tools:
+  runstore_mod_iteration_diff
+  runstore_mod_proposer_call
+  runstore_mod_file_history
+  runstore_mod_similar_changes</pre>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>问题</th>
+            <th>pure default no-trace</th>
+            <th>organized</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>历史状态在哪里</td>
+            <td>主要散落在 summaries、reference iteration bundles、raw artifacts 和 prompt narrative 中。</td>
+            <td>RunStore 是主状态；state.md 是 RunStore 生成的轻量 snapshot。</td>
+          </tr>
+          <tr>
+            <td>怎么查候选表现</td>
+            <td>模型自己读 JSON/summary，或者从 prompt 里的历史描述推断。</td>
+            <td>通过 trace tools 查询候选 outcome、iteration compare、task history 和 frontier。</td>
+          </tr>
+          <tr>
+            <td>怎么查改动历史</td>
+            <td>模型读 diff 文件和 reference source snapshot，自行拼接上下文。</td>
+            <td>通过 modification tools 查询 iteration diff、proposer call、file history 和 similar changes。</td>
+          </tr>
+          <tr>
+            <td>summary 的角色</td>
+            <td>是主要历史载体之一，容易变成 summary-driven loop。</td>
+            <td>降级为 debug/export；organized proposer 不以 summaries 作为主状态。</td>
+          </tr>
+          <tr>
+            <td>可审计性</td>
+            <td>需要从多个 artifact 反查。</td>
+            <td>每轮可以沿 RunStore 回答：看了什么、改了什么、候选表现如何、是否进入 frontier。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>
+        这次 fixedtools 版本还记录了 proposer 证据使用指标：RunStore tool calls、raw trace reads、raw reference reads、raw summary reads。最终四个 organized runs 的 <code>raw_summary_file_reads</code> 都是 0，说明已经不再依赖 summaries 作为主历史；同时 RunStore tool calls 非零，说明 trace/modification 工具确实被模型调用。
+      </p>
+
+      <div class="note">
+        当前设计保留 raw trace/reference 作为 fallback。也就是说 organized 不是 tool-only；它的约束是“RunStore 是 source of truth，tools 是精确查询接口，raw artifacts 是可读证据备份，summaries 不参与核心决策”。
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 这次对照里的 Pure Default 是什么</h2>
+      <p>
+        这里的 <b>pure default no-trace</b> 指本次重新启动的无 trace-tool 对照，不是之前误启动的 trace-enhanced default。它的核心属性如下：
+      </p>
+      <ul>
+        <li><code>--selection-policy default</code>。</li>
+        <li>不启用 <code>--organized</code>，没有 generated <code>state.md</code> 作为 state contract。</li>
+        <li>不注册 RunStore MCP tools，不注册 trace-tools 给 proposer 使用。</li>
+        <li>proposer 主要依赖默认 prompt、当前 workspace、历史 summary/debug artifact 这类传统上下文。</li>
+        <li>没有将查询接口分成 trace evidence tools 与 modification history tools。</li>
+      </ul>
+
+      <p>对应 run id：</p>
+      <pre>LoCoMo:
+runs/locomo_deepseek_v4_pro_pure_default_notrace_iter50_20260513_040020
+
+LongMemEval-S:
+runs/longmemeval_s_deepseek_v4_pro_pure_default_notrace_iter50_20260513_040020</pre>
+    </section>
+
+    <section>
+      <h2>4. Organized 算法结构有什么区别</h2>
+      <p>
+        organized 版本的目标不是简单“给模型更多文本”，而是把优化循环从 summary-driven loop 改成 structured evidence loop：
+      </p>
+
+      <div class="two-col">
+        <div class="card">
+          <h3>Pure default loop</h3>
+          <pre>workspace
+  + loose history / summaries
+  + proposer
+  + evaluator
+  -> candidate</pre>
+          <p class="muted">
+            历史信息主要以文本总结或文件 artifact 的形式进入 proposer。模型如果要追溯某次修改、某个任务失败历史、某个候选的 diff，需要自己在文件系统里找。
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Organized loop</h3>
+          <pre>RunStore
+  -> generated state.md
+  -> RunStore MCP tools
+  -> autonomous proposer
+  -> evaluator
+  -> RunStore records outcome</pre>
+          <p class="muted">
+            RunStore 是主状态，state.md 是当前 snapshot，tools 是精确证据查询接口。summaries 不再作为 proposer 的主状态来源。
+          </p>
+        </div>
+      </div>
+
+      <h3>3.1 RunStore</h3>
+      <p>
+        RunStore 负责组织每一轮优化历史，包括 iterations、candidates、eval results、task traces、proposer calls、diffs、file accesses、frontier 和 proposal metadata。它的作用是把“历史叙事”变成可查询的结构化状态。
+      </p>
+
+      <h3>3.2 state.md</h3>
+      <p>
+        <code>state.md</code> 由 RunStore 生成，只描述当前轻量状态，不写 suggested queries、diagnosis 或 next action。当前版本只保留 run metadata、最大化 passrate 的目标、recent top-5 passrate frontier，以及可用 RunStore tools；它不再暴露 current base，避免 default policy 下的 state base 被误解为 patch base。
+      </p>
+
+      <h3>3.3 RunStore MCP tools</h3>
+      <p>
+        这次修复后，proposer agent frontmatter 明确 allowlist 了实际 Claude MCP tool 名称，例如：
+      </p>
+      <pre>mcp__runstore-tools__runstore_trace_iteration_meta
+mcp__runstore-tools__runstore_trace_candidate_outcome
+mcp__runstore-tools__runstore_trace_compare_iterations
+mcp__runstore-tools__runstore_trace_task_history
+mcp__runstore-tools__runstore_trace_frontier
+mcp__runstore-tools__runstore_mod_iteration_diff
+mcp__runstore-tools__runstore_mod_proposer_call
+mcp__runstore-tools__runstore_mod_file_history
+mcp__runstore-tools__runstore_mod_similar_changes</pre>
+
+      <p>
+        我们刻意区分了两类工具：
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>工具类别</th>
+            <th>用途</th>
+            <th>例子</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Trace / outcome tools</td>
+            <td>查询评测结果、任务历史、候选对比、frontier。</td>
+            <td><code>task_history</code>, <code>candidate_outcome</code>, <code>compare_iterations</code>, <code>frontier</code></td>
+          </tr>
+          <tr>
+            <td>Modification tools</td>
+            <td>查询 proposer 做过什么修改、diff、文件演化、相似修改。</td>
+            <td><code>iteration_diff</code>, <code>proposer_call</code>, <code>file_history</code>, <code>similar_changes</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>3.4 proposer 自主性</h3>
+      <p>
+        prompt 没有强制模型必须调用某个工具，也没有把 next action 写死。模型可以读 raw traces/reference 作为 fallback，但它被明确告知：需要精确历史证据时优先使用 RunStore tools；如果绕过 tools，应该在 hypothesis/changes 里说明原因。
+      </p>
+    </section>
+
+    <section>
+      <h2>5. 我们实际尝试和修复了什么</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>阶段</th>
+            <th>动作</th>
+            <th>目的 / 发现</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>PR1 / mirror</td>
+            <td>引入 RunStore mirror mode，记录 candidates、task results、proposer calls、diffs。</td>
+            <td>不改变 default 行为，先保证历史可以被结构化重建。</td>
+          </tr>
+          <tr>
+            <td>state/tools</td>
+            <td>增加 <code>state.md</code> 生成与 RunStore MCP server。</td>
+            <td>让 proposer 能看到当前 state snapshot 和 exact evidence tools。</td>
+          </tr>
+          <tr>
+            <td>工具分层</td>
+            <td>把工具拆成 trace/outcome 查询与 modification 查询。</td>
+            <td>避免“都在 RunStore 里但语义混在一起”；模型可以更清楚地知道工具用途。</td>
+          </tr>
+          <tr>
+            <td>base bug 修复</td>
+            <td>修复 organized state 中 <code>base_iteration is None</code> 的问题。</td>
+            <td>旧 organized run 的 state.md 信息不完整，不能代表最终架构。</td>
+          </tr>
+          <tr>
+            <td>MCP allowlist 修复</td>
+            <td>在 <code>proposer.md</code> frontmatter 加入实际 <code>mcp__runstore-tools__...</code> 名称。</td>
+            <td>之前模型知道“有工具”但实际 subagent 可能没有权限调用。</td>
+          </tr>
+          <tr>
+            <td>prompt 修复</td>
+            <td>把 state.md 和 proposer prompt 中的工具名改成真实 MCP 名，说明每类工具能做什么。</td>
+            <td>不强制调用，但降低模型发现和使用工具的成本。</td>
+          </tr>
+          <tr>
+            <td>evidence metrics</td>
+            <td>记录 RunStore calls、raw trace reads、raw reference reads、summary reads。</td>
+            <td>验证 organized 是否真的摆脱 summary-driven，是否实际使用 tools。</td>
+          </tr>
+          <tr>
+            <td>实验重跑</td>
+            <td>DeepSeek V4 Pro，LoCoMo 和 LongMemEval-S，各跑 organized default 与 organized-pareto-nohist，50 iter。</td>
+            <td>与 pure default no-trace 做正式对照。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>6. 实验参数</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>参数</th>
+            <th>Pure default no-trace</th>
+            <th>Organized fixedtools</th>
+            <th>Organized-pareto-nohist fixedtools</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Iterations</td>
+            <td>50</td>
+            <td>50</td>
+            <td>50</td>
+          </tr>
+          <tr>
+            <td>Benchmarks</td>
+            <td>LoCoMo, LongMemEval-S</td>
+            <td>LoCoMo, LongMemEval-S</td>
+            <td>LoCoMo, LongMemEval-S</td>
+          </tr>
+          <tr>
+            <td>Train split</td>
+            <td><code>--split train</code></td>
+            <td><code>--split train</code></td>
+            <td><code>--split train</code></td>
+          </tr>
+          <tr>
+            <td>Test eval</td>
+            <td>自动 eval train frontier，LoCoMo test count 1449，LongMemEval-S test count 400</td>
+            <td>同左</td>
+            <td>同左</td>
+          </tr>
+          <tr>
+            <td>Selection policy</td>
+            <td><code>default</code></td>
+            <td><code>default</code></td>
+            <td><code>pareto</code></td>
+          </tr>
+          <tr>
+            <td>Organized state/tools</td>
+            <td>关闭</td>
+            <td><code>--organized</code></td>
+            <td><code>--organized</code></td>
+          </tr>
+          <tr>
+            <td>Historian</td>
+            <td>default path</td>
+            <td>default path</td>
+            <td><code>--no-historian</code></td>
+          </tr>
+          <tr>
+            <td>Scaffold</td>
+            <td><code>memgpt_source</code></td>
+            <td><code>memgpt_source</code></td>
+            <td><code>memgpt_source</code></td>
+          </tr>
+          <tr>
+            <td>Scaffold config</td>
+            <td><code>@configs/source_memory.example.json</code></td>
+            <td><code>@configs/source_memory.example.json</code></td>
+            <td><code>@configs/source_memory.example.json</code></td>
+          </tr>
+          <tr>
+            <td>Evaluator model</td>
+            <td><code>/data/home/yuhan/model_zoo/Qwen3-8B</code></td>
+            <td><code>/data/home/yuhan/model_zoo/Qwen3-8B</code></td>
+            <td><code>/data/home/yuhan/model_zoo/Qwen3-8B</code></td>
+          </tr>
+          <tr>
+            <td>Evaluator base URL</td>
+            <td><code>http://127.0.0.1:8002/v1</code></td>
+            <td><code>http://127.0.0.1:8002/v1</code></td>
+            <td><code>http://127.0.0.1:8002/v1</code></td>
+          </tr>
+          <tr>
+            <td>Eval workers</td>
+            <td>128</td>
+            <td>128</td>
+            <td>128</td>
+          </tr>
+          <tr>
+            <td>Proposer</td>
+            <td>Claude Code via DeepSeek Anthropic-compatible endpoint</td>
+            <td>同左</td>
+            <td>同左</td>
+          </tr>
+          <tr>
+            <td>Proposer model</td>
+            <td><code>deepseek-v4-pro[1m]</code></td>
+            <td><code>deepseek-v4-pro[1m]</code></td>
+            <td><code>deepseek-v4-pro[1m]</code></td>
+          </tr>
+          <tr>
+            <td>Proposer sandbox</td>
+            <td>Docker, <code>docker-claude:latest</code></td>
+            <td>Docker, <code>docker-claude:latest</code></td>
+            <td>Docker, <code>docker-claude:latest</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Run IDs</h3>
+      <pre>Pure default no-trace:
+  runs/locomo_deepseek_v4_pro_pure_default_notrace_iter50_20260513_040020
+  runs/longmemeval_s_deepseek_v4_pro_pure_default_notrace_iter50_20260513_040020
+
+Organized fixedtools:
+  runs/locomo_deepseek_v4_pro_organized_fixedtools_iter50_20260514_175719
+  runs/longmemeval_s_deepseek_v4_pro_organized_fixedtools_iter50_20260514_175719
+
+Organized-pareto-nohist fixedtools:
+  runs/locomo_deepseek_v4_pro_organized_pareto_nohist_fixedtools_iter50_20260514_175832
+  runs/longmemeval_s_deepseek_v4_pro_organized_pareto_nohist_fixedtools_iter50_20260514_175832</pre>
+    </section>
+
+    <section>
+      <h2>7. 详细结果：Train 与 Test Frontier</h2>
+
+      <h3>LoCoMo</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Variant</th>
+            <th class="num">Best train</th>
+            <th>Train best candidate</th>
+            <th class="num">Best test</th>
+            <th>Test best candidate</th>
+            <th class="num">Test avg score</th>
+            <th class="num">Test tokens</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>pure default no-trace</td>
+            <td class="num">0.4125</td>
+            <td><code>iter042_mmr_diverse_retrieval_top8_top8</code></td>
+            <td class="num">0.3616</td>
+            <td><code>iter049_temporal_mmr_v1_top8</code></td>
+            <td class="num">0.5008</td>
+            <td class="num">2,625,954</td>
+          </tr>
+          <tr>
+            <td>organized fixedtools</td>
+            <td class="num">0.4250</td>
+            <td><code>iter027_query_focused_evidence_v1_top8</code></td>
+            <td class="num">0.3478</td>
+            <td><code>iter027_query_focused_evidence_v1_top8</code></td>
+            <td class="num">0.4968</td>
+            <td class="num">2,636,140</td>
+          </tr>
+          <tr>
+            <td>organized-pareto-nohist fixedtools</td>
+            <td class="num">0.4125</td>
+            <td><code>iter047_temporal_boost_top8_top8</code></td>
+            <td class="num">0.3823</td>
+            <td><code>iter049_temporal_fix_precise_top8</code></td>
+            <td class="num">0.5076</td>
+            <td class="num">2,637,372</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>LongMemEval-S</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Variant</th>
+            <th class="num">Best train</th>
+            <th>Train best candidate</th>
+            <th class="num">Best test</th>
+            <th>Test best candidate</th>
+            <th class="num">Test avg score</th>
+            <th class="num">Test tokens</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>pure default no-trace</td>
+            <td class="num">0.6900</td>
+            <td><code>iter041_mmr_chrono_evidence_top12</code></td>
+            <td class="num">0.5800</td>
+            <td><code>iter042_weighted_overlap_mmr_top12</code></td>
+            <td class="num">0.5800</td>
+            <td class="num">510,557</td>
+          </tr>
+          <tr>
+            <td>organized fixedtools</td>
+            <td class="num">0.5900</td>
+            <td><code>iter049_sentence_temporal_index_v1_top8</code></td>
+            <td class="num">0.5200</td>
+            <td><code>iter049_sentence_temporal_index_v1_top8</code></td>
+            <td class="num">0.5200</td>
+            <td class="num">577,191</td>
+          </tr>
+          <tr>
+            <td>organized-pareto-nohist fixedtools</td>
+            <td class="num">0.7200</td>
+            <td><code>iter046_temporal_proximity_adaptive_top8_top8</code></td>
+            <td class="num">0.5500</td>
+            <td><code>iter043_specificity_expand_no_window_widen_top8_top8</code></td>
+            <td class="num">0.5500</td>
+            <td class="num">703,532</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Best-passrate evolution</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th>Breakthrough sequence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>LoCoMo organized</td>
+            <td><code>iter000 0.3625</code> -> <code>iter012 0.3875</code> -> <code>iter014 0.4125</code> -> <code>iter027 0.4250</code></td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S organized</td>
+            <td><code>iter000 0.08</code> -> <code>iter002 0.46</code> -> <code>iter010 0.54</code> -> <code>iter045 0.59</code></td>
+          </tr>
+          <tr>
+            <td>LoCoMo organized-pareto-nohist</td>
+            <td><code>iter000 0.3625</code> -> <code>iter012 0.3875</code> -> <code>iter017 0.4125</code>; 之后 train 未突破，但 test frontier 选到更好的泛化 candidate。</td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S organized-pareto-nohist</td>
+            <td><code>iter000 0.16</code> -> <code>iter009 0.61</code> -> <code>iter018 0.64</code> -> <code>iter043 0.70</code> -> <code>iter046 0.72</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>8. Proposer 消耗与 Evidence 使用</h2>
+
+      <h3>Proposer token / cost</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th class="num">Calls</th>
+            <th class="num">Total tokens</th>
+            <th class="num">Avg / iter</th>
+            <th class="num">Reported incl cache</th>
+            <th class="num">Estimated cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>LoCoMo pure default no-trace</td>
+            <td class="num">50</td>
+            <td class="num">18.91M</td>
+            <td class="num">378K</td>
+            <td class="num">429M</td>
+            <td class="num">$107.11</td>
+          </tr>
+          <tr>
+            <td>LoCoMo organized fixedtools</td>
+            <td class="num">50</td>
+            <td class="num">14.95M</td>
+            <td class="num">299K</td>
+            <td class="num">389M</td>
+            <td class="num">$106.17</td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S organized fixedtools</td>
+            <td class="num">50</td>
+            <td class="num">15.11M</td>
+            <td class="num">302K</td>
+            <td class="num">425M</td>
+            <td class="num">$114.92</td>
+          </tr>
+          <tr>
+            <td>LoCoMo organized-pareto-nohist fixedtools</td>
+            <td class="num">50</td>
+            <td class="num">16.08M</td>
+            <td class="num">322K</td>
+            <td class="num">376M</td>
+            <td class="num">$103.37</td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S organized-pareto-nohist fixedtools</td>
+            <td class="num">50</td>
+            <td class="num">16.05M</td>
+            <td class="num">321K</td>
+            <td class="num">443M</td>
+            <td class="num">$118.19</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="muted">
+        Pure default 的 LongMemEval-S proposer token 这里没有单独列出，因为本报告重点是 fixedtools organized 重跑的完整 metrics；pure default 的 test 结果仍用于性能 baseline。
+      </p>
+
+      <h3>Evidence usage after fixedtools</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Run</th>
+            <th class="num">RunStore calls</th>
+            <th class="num">Trace tool calls</th>
+            <th class="num">Modification tool calls</th>
+            <th class="num">Raw trace reads</th>
+            <th class="num">Raw reference reads</th>
+            <th class="num">Summary reads</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>LoCoMo organized</td>
+            <td class="num">104</td>
+            <td class="num">49</td>
+            <td class="num">55</td>
+            <td class="num">338</td>
+            <td class="num">240</td>
+            <td class="num">0</td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S organized</td>
+            <td class="num">113</td>
+            <td class="num">44</td>
+            <td class="num">69</td>
+            <td class="num">343</td>
+            <td class="num">287</td>
+            <td class="num">0</td>
+          </tr>
+          <tr>
+            <td>LoCoMo organized-pareto-nohist</td>
+            <td class="num">58</td>
+            <td class="num">17</td>
+            <td class="num">41</td>
+            <td class="num">382</td>
+            <td class="num">215</td>
+            <td class="num">0</td>
+          </tr>
+          <tr>
+            <td>LongMemEval-S organized-pareto-nohist</td>
+            <td class="num">60</td>
+            <td class="num">29</td>
+            <td class="num">31</td>
+            <td class="num">407</td>
+            <td class="num">171</td>
+            <td class="num">0</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="note">
+        这个表说明 fixedtools 修复是有效的：RunStore tools 被调用，summary reads 为 0。它也说明 organized 目前还不是“tool-only”：模型仍经常直接读 raw trace/reference。这个行为是允许的，因为我们没有禁用 raw evidence，只是把 RunStore tools 作为更方便的精确查询接口暴露给模型。
+      </div>
+    </section>
+
+    <section>
+      <h2>9. 为什么 LongMemEval-S organized 没超过 pure default</h2>
+      <ul>
+        <li><b>top_k 路线差异：</b>pure default 的强候选主要是 <code>top12</code>，例如 <code>mmr_chrono_evidence_top12</code> 和 <code>weighted_overlap_mmr_top12</code>。organized 两组最终大量落在 <code>top8</code>，test recall 可能不足。</li>
+        <li><b>train overfitting：</b>organized-pareto-nohist train 到 0.72，但 test 只有 0.55，说明 temporal/specificity/enumeration 类策略抓住了 train pattern，但泛化不如 pure default 的 weighted-overlap MMR。</li>
+        <li><b>tool 使用不是主要瓶颈的唯一解释：</b>修复后 tools 已经被用，summary reads 为 0，但模型仍大量读 raw evidence。结构化工具提高了可追溯性，却不自动保证搜索方向更泛化。</li>
+        <li><b>pareto selection 的副作用：</b>pareto/no-historian 更愿意探索 token / passrate frontier，LongMemEval-S 上推高了 train frontier，但 test frontier 没追上 pure default。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>10. 当前判断</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>问题</th>
+            <th>判断</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>organized 架构是否已经生效？</td>
+            <td><span class="tag">是</span>state.md 有内容，MCP tools 在 allowlist 中，RunStore calls 被记录，summary reads 为 0。</td>
+          </tr>
+          <tr>
+            <td>organized 是否全面优于 pure default？</td>
+            <td><span class="tag warn">不是</span>LoCoMo pareto-nohist test 更好；LongMemEval-S pure default test 仍更好。</td>
+          </tr>
+          <tr>
+            <td>目前最有价值的 organized 结果是什么？</td>
+            <td>LoCoMo organized-pareto-nohist fixedtools：test 0.3823，相比 pure default 0.3616 有正收益。</td>
+          </tr>
+          <tr>
+            <td>最明显的问题是什么？</td>
+            <td>LongMemEval-S organized-pareto-nohist train 0.72 但 test 0.55，存在明显泛化差距。</td>
+          </tr>
+          <tr>
+            <td>下一步该优先改什么？</td>
+            <td>保留 RunStore/state/tools；在 selection/prompt 层增加对泛化风险、top_k 路线、test-like diversity 的约束，而不是回退到 summary-driven。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>11. Repro Commands 摘要</h2>
+      <pre># pure default no-trace
+python -m optimizer1.cli optimize \
+  --locomo \
+  --selection-policy default \
+  --run-id locomo_deepseek_v4_pro_pure_default_notrace_iter50_20260513_040020 \
+  --iterations 50 --split train \
+  --scaffolds memgpt_source \
+  --scaffold-extra-json @configs/source_memory.example.json \
+  --eval-workers 128 \
+  --model /data/home/yuhan/model_zoo/Qwen3-8B \
+  --base-url http://127.0.0.1:8002/v1 \
+  --proposer-agent claude \
+  --claude-model deepseek-v4-pro[1m] \
+  --claude-base-url https://api.deepseek.com/anthropic \
+  --claude-effort max \
+  --force-budget high \
+  --proposer-sandbox docker \
+  --proposer-docker-image docker-claude:latest
+
+# organized fixedtools
+python -m optimizer1.cli optimize \
+  --locomo \
+  --selection-policy default \
+  --organized \
+  --run-id locomo_deepseek_v4_pro_organized_fixedtools_iter50_20260514_175719 \
+  --iterations 50 --split train \
+  --scaffolds memgpt_source \
+  --scaffold-extra-json @configs/source_memory.example.json \
+  --eval-workers 128 \
+  --model /data/home/yuhan/model_zoo/Qwen3-8B \
+  --base-url http://127.0.0.1:8002/v1 \
+  --proposer-agent claude \
+  --claude-model deepseek-v4-pro[1m] \
+  --claude-base-url https://api.deepseek.com/anthropic \
+  --claude-effort max \
+  --force-budget high \
+  --proposer-sandbox docker \
+  --proposer-docker-image docker-claude:latest
+
+# organized-pareto-nohist fixedtools
+python -m optimizer1.cli optimize \
+  --locomo \
+  --selection-policy pareto \
+  --organized \
+  --no-historian \
+  --run-id locomo_deepseek_v4_pro_organized_pareto_nohist_fixedtools_iter50_20260514_175832 \
+  --iterations 50 --split train \
+  --scaffolds memgpt_source \
+  --scaffold-extra-json @configs/source_memory.example.json \
+  --eval-workers 128 \
+  --model /data/home/yuhan/model_zoo/Qwen3-8B \
+  --base-url http://127.0.0.1:8002/v1 \
+  --proposer-agent claude \
+  --claude-model deepseek-v4-pro[1m] \
+  --claude-base-url https://api.deepseek.com/anthropic \
+  --claude-effort max \
+  --force-budget high \
+  --proposer-sandbox docker \
+  --proposer-docker-image docker-claude:latest</pre>
+      <p class="muted">
+        LongMemEval-S 命令对应把 <code>--locomo</code> 替换为 <code>--longmemeval --longmemeval-variant s</code>，run id 使用上文列出的 LongMemEval-S run。
+      </p>
+    </section>
+  </main>
+</body>
+</html>
