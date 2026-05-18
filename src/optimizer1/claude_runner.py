@@ -294,6 +294,7 @@ def run_claude_prompt(
         model=model,
         effort=effort,
         agent_name=agent_name,
+        mcp_config=_claude_mcp_config_path(cwd, sandbox=sandbox),
     )
     log_dir.mkdir(parents=True, exist_ok=True)
     started = time.time()
@@ -404,6 +405,7 @@ def _claude_command(
     model: str,
     effort: str = "",
     agent_name: str | None = None,
+    mcp_config: Path | None = None,
 ) -> tuple[str, ...]:
     parts: list[str] = [
         CLAUDE_EXECUTABLE,
@@ -414,6 +416,8 @@ def _claude_command(
         "--permission-mode",
         "bypassPermissions",
     ]
+    if mcp_config is not None:
+        parts.extend(["--mcp-config", str(mcp_config)])
     if model:
         parts.extend(["--model", model])
     if effort:
@@ -421,6 +425,18 @@ def _claude_command(
     if agent_name:
         parts.extend(["--agent", agent_name])
     return tuple(parts)
+
+
+def _claude_mcp_config_path(
+    cwd: Path,
+    *,
+    sandbox: ProposerSandboxConfig | None,
+) -> Path | None:
+    """Return the Claude-visible project MCP config path when present."""
+
+    if not (cwd / ".mcp.json").is_file():
+        return None
+    return _agent_visible_cwd(cwd, sandbox=sandbox) / ".mcp.json"
 
 
 def _claude_env(
@@ -627,6 +643,104 @@ def _extract_claude_tool_access(
         ),
         "files_read": dict(sorted(files_read.items())),
         "files_written": dict(sorted(files_written.items())),
+        "evidence_usage": _summarize_evidence_usage(
+            tool_uses=tool_uses,
+            files_read=files_read,
+        ),
+    }
+
+
+def _is_runstore_tool_name(name: str) -> bool:
+    return (
+        name.startswith("mcp__runstore-tools__runstore_")
+        or name.startswith("runstore_")
+        or name.startswith("mcp__evidence-tools__evidence_")
+        or name.startswith("evidence_")
+    )
+
+
+def _is_runstore_trace_tool_name(name: str) -> bool:
+    return (
+        name.startswith("mcp__runstore-tools__runstore_trace_")
+        or name.startswith("runstore_trace_")
+        or name.startswith("mcp__evidence-tools__evidence_fact_state")
+        or name.startswith("mcp__evidence-tools__evidence_fact_candidate_outcome")
+        or name.startswith("mcp__evidence-tools__evidence_fact_compare_iterations")
+        or name.startswith("mcp__evidence-tools__evidence_fact_task_history")
+        or name.startswith("mcp__evidence-tools__evidence_fact_trace")
+        or name.startswith("mcp__evidence-tools__evidence_link_")
+    )
+
+
+def _is_runstore_mod_tool_name(name: str) -> bool:
+    return (
+        name.startswith("mcp__runstore-tools__runstore_mod_")
+        or name.startswith("runstore_mod_")
+        or name.startswith("mcp__evidence-tools__evidence_fact_modification")
+        or name.startswith("mcp__evidence-tools__evidence_fact_proposer_call")
+        or name.startswith("mcp__evidence-tools__evidence_fact_file_history")
+    )
+
+
+def _evidence_path_bucket(path: str) -> str | None:
+    normalized = path.replace("\\", "/").lstrip("./")
+    if "/workspace/" in normalized:
+        normalized = normalized.split("/workspace/", 1)[1].lstrip("/")
+    for marker in ("traces/", "reference_iterations/", "summaries/"):
+        if normalized.startswith(marker) or f"/{marker}" in normalized:
+            return marker.rstrip("/")
+    return None
+
+
+def _summarize_evidence_usage(
+    *,
+    tool_uses: list[dict[str, Any]],
+    files_read: dict[str, dict[str, int]],
+) -> dict[str, Any]:
+    runstore_tool_calls = 0
+    runstore_trace_tool_calls = 0
+    runstore_mod_tool_calls = 0
+    for item in tool_uses:
+        name = str(item.get("name") or "")
+        if _is_runstore_tool_name(name):
+            runstore_tool_calls += 1
+        if _is_runstore_trace_tool_name(name):
+            runstore_trace_tool_calls += 1
+        if _is_runstore_mod_tool_name(name):
+            runstore_mod_tool_calls += 1
+
+    raw_reads = {"traces": 0, "reference_iterations": 0, "summaries": 0}
+    raw_unique = {"traces": set(), "reference_iterations": set(), "summaries": set()}
+    for path, meta in files_read.items():
+        bucket = _evidence_path_bucket(str(path))
+        if bucket is None:
+            continue
+        details = meta if isinstance(meta, dict) else {}
+        reads = _int_metric(details.get("reads", 0))
+        if reads <= 0:
+            reads = 1
+        raw_reads[bucket] += reads
+        raw_unique[bucket].add(str(path))
+
+    raw_evidence_file_reads = sum(raw_reads.values())
+    evidence_events = runstore_tool_calls + raw_evidence_file_reads
+    return {
+        "runstore_tool_calls": runstore_tool_calls,
+        "runstore_trace_tool_calls": runstore_trace_tool_calls,
+        "runstore_mod_tool_calls": runstore_mod_tool_calls,
+        "raw_trace_file_reads": raw_reads["traces"],
+        "raw_reference_file_reads": raw_reads["reference_iterations"],
+        "raw_summary_file_reads": raw_reads["summaries"],
+        "raw_evidence_file_reads": raw_evidence_file_reads,
+        "raw_trace_unique_files": len(raw_unique["traces"]),
+        "raw_reference_unique_files": len(raw_unique["reference_iterations"]),
+        "raw_summary_unique_files": len(raw_unique["summaries"]),
+        "evidence_usage_events": evidence_events,
+        "evidence_usage_rate": (
+            round(runstore_tool_calls / evidence_events, 4)
+            if evidence_events
+            else 0.0
+        ),
     }
 
 
@@ -766,6 +880,11 @@ def _extract_session_metrics(
         "read_lines": read_lines,
         "write_file_calls": write_count,
         "written_lines": written_lines,
+        "evidence_usage": (
+            tool_access.get("evidence_usage", {})
+            if isinstance(tool_access.get("evidence_usage"), dict)
+            else {}
+        ),
     }
 
 

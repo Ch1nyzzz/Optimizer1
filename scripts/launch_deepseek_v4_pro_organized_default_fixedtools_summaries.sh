@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Launch organized default fixedtools runs across LoCoMo and LongMemEval-S.
-# This arm keeps the default selection policy and clean patch base, but
-# enables organized state.md plus EvidenceStore MCP tools.
+# Launch organized default fixedtools + summaries runs across LoCoMo and
+# LongMemEval-S. This arm keeps organized state.md plus EvidenceStore MCP
+# tools, and also exposes the cumulative summaries/ directory to proposer.
 set -u -o pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -41,10 +41,10 @@ DOCKER_USER_SPEC="${DOCKER_USER_SPEC:-$(id -u):$(id -g)}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-docker-claude:latest}"
 
 mkdir -p logs runs
-status_file="logs/launch_deepseek_v4_pro_organized_default_fixedtools_${TS}.status"
+status_file="logs/launch_deepseek_v4_pro_organized_default_fixedtools_summaries_${TS}.status"
 : > "$status_file"
 printf 'timestamp=%s\n' "$TS" >> "$status_file"
-printf 'mode=organized_default_fixedtools\n' >> "$status_file"
+printf 'mode=organized_default_fixedtools_summaries\n' >> "$status_file"
 
 contains() { case ",$1," in *",$2,"*) return 0;; *) return 1;; esac; }
 
@@ -63,7 +63,7 @@ start_one() {
     return 0
   fi
 
-  run_id="${task_label}_deepseek_v4_pro_organized_fixedtools_iter${ITERATIONS}_${TS}"
+  run_id="${task_label}_deepseek_v4_pro_organized_fixedtools_summaries_iter${ITERATIONS}_${TS}"
   if [ -d "runs/${run_id}" ]; then
     printf '[%s] SKIP %s existing_run_dir\n' "$(date -Is)" "$run_id" >> "$status_file"
     return 0
@@ -77,6 +77,7 @@ start_one() {
     "${task_args[@]}" \
     --selection-policy default \
     --organized \
+    --organized-include-summaries \
     --run-id "$run_id" \
     --iterations "$ITERATIONS" \
     --split train \

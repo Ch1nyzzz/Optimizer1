@@ -69,7 +69,10 @@ GROUPS: dict[str, list[str]] = {
         "longmemeval_memgpt_claudekimi_curaii_docker_iter30_train100_20260508_072808",
         "longmemeval_memgpt_claudekimi_curaii_v2_docker_iter30_train100_20260508_190514",
     ],
-    # bandit / progressive auto-budget (still fixed base, but adaptive context).
+    # bandit / progressive auto-budget (still FIXED base mu_t=delta_x0, only the
+    # *context* is adaptive) -- a policy-agnosticity check for the phase
+    # structure: if these show the same early-churn / late-compound shape as
+    # `default`, the shape is a property of the pinned base, not of `default`.
     "adaptive_kimi": [
         "locomo_memgpt_claudekimi_bandit_v3_autobudget_docker_iter30_train80_w16_r1_20260504_162844",
         "locomo_memgpt_claudekimi_bandit_v3_autobudget_docker_iter30_train80_w16_r2_20260504_162844",
@@ -80,6 +83,28 @@ GROUPS: dict[str, list[str]] = {
         "longmemeval_memgpt_claudekimi_bandit_v3_banditfix_autobudget_docker_iter30_train100_w16_r2_20260505_003416",
         "longmemeval_memgpt_claudekimi_bandit_v4_autobudget_docker_iter30_train100_w16_r1_20260505_040626",
         "longmemeval_memgpt_claudekimi_progressive_autobudget_docker_iter30_train100_r1_20260504_162844",
+    ],
+    # codex54 proposer, fixed base (default policy) -- backbone-agnosticity check.
+    "fixed_base_codex54": [
+        "locomo_memgpt_codex54_default_docker_iter30_train80_20260501_204007",
+        "locomo_memgpt_codex54_default_docker_iter30_train80_rerun_20260502_015354",
+        "locomo_memgpt_codex54_default_new_docker_iter30_train80_r1_20260506_005632",
+        "locomo_memgpt_codex54_default_new_docker_iter30_train80_r2_20260506_005632",
+        "locomo_memgpt_codex54_default_new_docker_iter30_train80_r3_20260506_005632",
+        "locomo_memgpt_codex54_default_codexlogin_autobudget_docker_iter30_train80_r1_20260504_163640",
+        "locomo_memgpt_codex54_default_codexlogin_autobudget_docker_iter30_train80_r3_20260505_005403",
+    ],
+    # SWE-bench mini, claudekimi, fixed base (default+direction / bandit /
+    # random3 / recent3 all keep mu_t=delta_x0; only context differs) -- a
+    # task-agnosticity check on a multi-file agent codebase rather than memgpt.
+    "fixed_base_swebench": [
+        "swebench_miniswe_deepseek_v4_flash_claudekimi_default_direction_iter30_trainfirst30_w10_t900_20260502_015837",
+        "swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_budgethigh_iter20_trainfirst30_w10_t900_20260503_200504",
+        "swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_budgethigh_iter20_trainfirst30_w10_t900_20260504_153613",
+        "swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v4_autobudget_docker_iter20_trainfirst30_w10_t900_bw16_20260505_202316",
+        "swebench_miniswe_deepseek_v4_flash_claudekimi_random3_fileaccess_docker_iter20_trainfirst30_w10_t900_20260505_202316",
+        "swebench_miniswe_deepseek_v4_flash_claudekimi_recent3_fileaccess_docker_iter20_trainfirst30_w10_t900_20260505_202316",
+        "swebench_miniswe_deepseek_v4_flash_claudekimi_bandit_v3_fixedsource_iter20_trainfirst30_w10_t900_20260430_233750",
     ],
 }
 

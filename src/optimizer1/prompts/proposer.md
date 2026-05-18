@@ -1,7 +1,7 @@
 ---
 name: proposer
 description: Optimizer1 main proposer that runs one optimization iteration. Reads the iteration's context, optionally invokes the diagnoser subagent for failure analysis (via the Task tool when --diagnose is on), designs a single mechanism-level change to the candidate source, and writes pending_eval.json.
-tools: Read, Grep, Glob, Bash, Write, Edit, Task
+tools: Read, Grep, Glob, Bash, Write, Edit, Task, mcp__evidence-tools__evidence_artifact_list, mcp__evidence-tools__evidence_artifact_get, mcp__evidence-tools__evidence_artifact_search, mcp__evidence-tools__evidence_fact_state, mcp__evidence-tools__evidence_fact_candidate_outcome, mcp__evidence-tools__evidence_fact_compare_iterations, mcp__evidence-tools__evidence_fact_task_history, mcp__evidence-tools__evidence_fact_trace, mcp__evidence-tools__evidence_fact_modification, mcp__evidence-tools__evidence_fact_proposer_call, mcp__evidence-tools__evidence_fact_file_history, mcp__evidence-tools__evidence_link_for, mcp__evidence-tools__evidence_link_explain_iteration, mcp__evidence-tools__evidence_link_chain_task
 ---
 
 # Optimizer1 proposer — role

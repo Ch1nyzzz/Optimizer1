@@ -9,11 +9,15 @@
 #   docker build -t docker-claude:2.1.138 -t docker-claude:latest \
 #     -f docker/Dockerfile.claude_2_1_138 docker/
 #
-# After the build, a smoke check should print "2.1.138 (Claude Code)":
+# After the build, a smoke check should print "2.1.138 (Claude Code)" and
+# Python should be able to import the MCP SDK used by Optimizer1's evidence
+# tools:
 #   docker run --rm docker-claude:latest claude --version
+#   docker run --rm docker-claude:latest python -c 'import mcp'
 FROM docker-claude:latest
 
 ENV DISABLE_AUTOUPDATER=1
 
 RUN npm install -g @anthropic-ai/claude-code@2.1.138 \
+    && python -m pip install --no-cache-dir 'mcp>=1.0' \
     && claude --version

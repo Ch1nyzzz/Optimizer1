@@ -64,6 +64,7 @@ def build_progressive_proposer_prompt(
     run_dir: Path,
     pending_eval_path: Path,
     summaries_dir: Path,
+    include_summaries: bool = True,
     reference_iterations_dir: Path,
     generated_dir: Path,
     source_snapshot_dir: Path,
@@ -86,6 +87,8 @@ def build_progressive_proposer_prompt(
     current_base_iter: int | None = None,
     current_base_passrate: float | None = None,
     current_base_average_score: float | None = None,
+    state_path: Path | None = None,
+    organized: bool = False,
     trace_harness_dir: Path | None = None,
     diagnoser_via_subagent: bool = False,
     subagent_mode: bool = False,
@@ -278,8 +281,102 @@ fills a diagnostic gap, read it.
 """
     refs_json = ", ".join(str(item) for item in reference_iterations)
     pending_eval_display = show(pending_eval_path)
+    state_display = show(state_path) if state_path is not None else None
     summaries_display = show(summaries_dir)
     reference_display = show(reference_iterations_dir)
+    if include_summaries:
+        summaries_assignment_line = f"- Cumulative summaries: `{summaries_display}/`"
+        summaries_files_block = (
+            f"- `{summaries_display}/evolution_summary.jsonl` — full cumulative event history\n"
+            f"  through the previous iteration.\n"
+            f"- `{summaries_display}/best_candidates.json` — current passrate/average_score\n"
+            f"  quality Pareto frontier candidates.\n"
+            f"- `{summaries_display}/candidate_score_table.json` — compact metrics for all\n"
+            f"  evaluated candidates.\n"
+            f"- `{summaries_display}/retrieval_diagnostics_summary.json` — cumulative failure\n"
+            f"  and retrieval-pattern summary.\n"
+            f"- `{summaries_display}/iteration_index.json` — paths for prior iteration\n"
+            f"  artifacts.\n"
+            f"- `{summaries_display}/diff_summary.jsonl` — compact source-change records."
+        )
+    else:
+        summaries_assignment_line = (
+            "- Cumulative summaries: **not provided in this run** — there is no `summaries/` "
+            "directory and no cumulative digest in this prompt. Judge prior iterations "
+            f"directly from each bundle's `eval/`, `diff.patch`, and `diff_digest.md` under "
+            f"`{reference_display}/iter_NNN/`."
+        )
+        summaries_files_block = (
+            "- (no cumulative summary files in this run — inspect the raw iteration bundles "
+            f"under `{reference_display}/iter_NNN/` instead)"
+        )
+    organized_section = ""
+    if organized and state_display is not None:
+        if include_summaries:
+            organized_summary_guidance = (
+                "Cumulative summary files are available in this ablation, but "
+                "state.md plus EvidenceStore MCP tools are the organized "
+                "interfaces for historical evidence."
+            )
+            summaries_assignment_line = (
+                f"- State snapshot: `{state_display}`\n"
+                f"- Cumulative summaries: `{summaries_display}/`"
+            )
+            summaries_files_block = (
+                f"- `{state_display}` — current optimizer state snapshot generated from EvidenceStore. "
+                "Read this first. It is not evidence and not a plan.\n"
+                "- EvidenceStore MCP tools — query structured modification, trace, and outcome facts. "
+                "Do not open or copy the backing SQLite DB directly.\n"
+                f"{summaries_files_block}"
+            )
+        else:
+            organized_summary_guidance = (
+                "Do not rely on cumulative summary files in organized mode."
+            )
+            summaries_assignment_line = (
+                f"- State snapshot: `{state_display}`\n"
+                "- Cumulative summaries: **not provided to the proposer in organized mode**."
+            )
+            summaries_files_block = (
+                f"- `{state_display}` — current optimizer state snapshot generated from EvidenceStore. "
+                "Read this first. It is not evidence and not a plan.\n"
+                "- EvidenceStore MCP tools — query structured modification, trace, and outcome facts. "
+                "Do not open or copy the backing SQLite DB directly.\n"
+                "- (no cumulative summary files in organized mode)"
+            )
+        organized_section = f"""
+## Organized Evidence Contract
+
+Read `{state_display}` first. It is a current state snapshot only; do not treat
+it as evidence, diagnosis, or a suggested plan.
+
+The `evidence-tools` MCP server exposes the current run's historical evidence
+through raw artifact, structured fact, and evidence-link tools.
+
+Raw artifact tools:
+- `mcp__evidence-tools__evidence_artifact_list`
+- `mcp__evidence-tools__evidence_artifact_get`
+- `mcp__evidence-tools__evidence_artifact_search`
+
+Structured fact tools:
+- `mcp__evidence-tools__evidence_fact_state`
+- `mcp__evidence-tools__evidence_fact_candidate_outcome`
+- `mcp__evidence-tools__evidence_fact_compare_iterations`
+- `mcp__evidence-tools__evidence_fact_task_history`
+- `mcp__evidence-tools__evidence_fact_trace`
+- `mcp__evidence-tools__evidence_fact_modification`
+- `mcp__evidence-tools__evidence_fact_proposer_call`
+- `mcp__evidence-tools__evidence_fact_file_history`
+
+Evidence-link tools:
+- `mcp__evidence-tools__evidence_link_for`
+- `mcp__evidence-tools__evidence_link_explain_iteration`
+- `mcp__evidence-tools__evidence_link_chain_task`
+
+{organized_summary_guidance} Inspect the current workspace source, query
+evidence as needed, make one useful modification, and state your hypothesis and
+expected effect in `pending_eval.json`.
+"""
     source_snapshot_display = show(source_snapshot_dir)
     generated_display = show(generated_dir)
     optimization_subject = _optimization_subject(target_system)
@@ -430,7 +527,7 @@ You are optimizing the {optimization_subject} for {benchmark_name}.
 - Target system: `{target_system}`
 - Eval split: `{split}`
 - Eval limit: `{limit}` (`0` means full split)
-- Cumulative summaries: `{summaries_display}/`
+{summaries_assignment_line}
 - Raw reference iterations: `{reference_display}/` ({refs})
 {reference_role_note}
 - Writable clean source snapshot: `{source_snapshot_display}/candidate/`
@@ -439,22 +536,13 @@ You are optimizing the {optimization_subject} for {benchmark_name}.
 
 {starting_point_block}
 {diagnoser_section}
+{organized_section}
 {focus_section}
 {bandit_section}
 
 ## Available Files
 
-- `{summaries_display}/evolution_summary.jsonl` — full cumulative event history
-  through the previous iteration.
-- `{summaries_display}/best_candidates.json` — current passrate/average_score
-  quality Pareto frontier candidates.
-- `{summaries_display}/candidate_score_table.json` — compact metrics for all
-  evaluated candidates.
-- `{summaries_display}/retrieval_diagnostics_summary.json` — cumulative failure
-  and retrieval-pattern summary.
-- `{summaries_display}/iteration_index.json` — paths for prior iteration
-  artifacts.
-- `{summaries_display}/diff_summary.jsonl` — compact source-change records.
+{summaries_files_block}
 - `{reference_display}/` — raw iteration bundles copied into this workspace for
   detailed diagnosis. Cumulative summaries may mention iterations whose raw
   bundles are not present here.

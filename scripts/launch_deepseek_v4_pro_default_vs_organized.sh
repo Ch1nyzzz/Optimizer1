@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Launch organized default fixedtools runs across LoCoMo and LongMemEval-S.
-# This arm keeps the default selection policy and clean patch base, but
-# enables organized state.md plus EvidenceStore MCP tools.
+# Launch default-vs-organized runs across LoCoMo and LongMemEval with
+# Claude Code routed to DeepSeek V4 Pro via the Anthropic-compatible endpoint.
 set -u -o pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -32,6 +31,7 @@ export DIFF_EMBEDDING_MODEL="${DIFF_EMBEDDING_MODEL:-BAAI/bge-large-en-v1.5}"
 TS="${TS:-$(date +%Y%m%d_%H%M%S)}"
 ITERATIONS="${ITERATIONS:-50}"
 TASKS="${TASKS:-locomo,longmemeval}"
+ARMS="${ARMS:-default,organized}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-deepseek-v4-pro[1m]}"
 CLAUDE_BASE_URL="${CLAUDE_BASE_URL:-https://api.deepseek.com/anthropic}"
 EVAL_WORKERS="${EVAL_WORKERS:-128}"
@@ -41,16 +41,15 @@ DOCKER_USER_SPEC="${DOCKER_USER_SPEC:-$(id -u):$(id -g)}"
 DOCKER_IMAGE="${DOCKER_IMAGE:-docker-claude:latest}"
 
 mkdir -p logs runs
-status_file="logs/launch_deepseek_v4_pro_organized_default_fixedtools_${TS}.status"
+status_file="logs/launch_deepseek_v4_pro_default_vs_organized_${TS}.status"
 : > "$status_file"
-printf 'timestamp=%s\n' "$TS" >> "$status_file"
-printf 'mode=organized_default_fixedtools\n' >> "$status_file"
 
 contains() { case ",$1," in *",$2,"*) return 0;; *) return 1;; esac; }
 
 start_one() {
   local task="$1"
-  local task_label task_args=() run_id log_path
+  local arm="$2"
+  local task_label task_args=() arm_args=() run_id log_path
 
   if [ "$task" = "locomo" ]; then
     task_label="locomo"
@@ -63,7 +62,17 @@ start_one() {
     return 0
   fi
 
-  run_id="${task_label}_deepseek_v4_pro_organized_fixedtools_iter${ITERATIONS}_${TS}"
+  if [ "$arm" = "default" ]; then
+    arm_args=(--selection-policy default)
+    run_id="${task_label}_deepseek_v4_pro_default_iter${ITERATIONS}_${TS}"
+  elif [ "$arm" = "organized" ]; then
+    arm_args=(--selection-policy default --organized)
+    run_id="${task_label}_deepseek_v4_pro_organized_iter${ITERATIONS}_${TS}"
+  else
+    printf '[%s] SKIP unknown_arm=%s\n' "$(date -Is)" "$arm" >> "$status_file"
+    return 0
+  fi
+
   if [ -d "runs/${run_id}" ]; then
     printf '[%s] SKIP %s existing_run_dir\n' "$(date -Is)" "$run_id" >> "$status_file"
     return 0
@@ -75,8 +84,7 @@ start_one() {
 
   setsid python -m optimizer1.cli optimize \
     "${task_args[@]}" \
-    --selection-policy default \
-    --organized \
+    "${arm_args[@]}" \
     --run-id "$run_id" \
     --iterations "$ITERATIONS" \
     --split train \
@@ -110,7 +118,10 @@ start_one() {
 
 for task in locomo longmemeval; do
   contains "$TASKS" "$task" || continue
-  start_one "$task"
+  for arm in default organized; do
+    contains "$ARMS" "$arm" || continue
+    start_one "$task" "$arm"
+  done
 done
 
 printf '\nstatus: %s\n' "$status_file"

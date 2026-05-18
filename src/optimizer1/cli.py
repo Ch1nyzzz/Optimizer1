@@ -579,6 +579,49 @@ def main() -> int:
             "within the run so identical lineage states do not re-diagnose."
         ),
     )
+    optimize.add_argument(
+        "--no-historian",
+        action="store_true",
+        help=(
+            "Disable the stagnation-forensics historian subagent (otherwise "
+            "offered to the pareto / curai / curaii policies once a stagnation "
+            "streak begins). With this flag, a `--selection-policy pareto` run "
+            "differs from a `--selection-policy default` run only in the patch "
+            "base, making it a clean rebase-on/off ablation. No effect on the "
+            "default / progressive / bandit policies, which never run the "
+            "historian. Independent of `--diagnose`."
+        ),
+    )
+    optimize.add_argument(
+        "--no-summary",
+        action="store_true",
+        help=(
+            "Withhold the cumulative cross-session summary from the proposer: "
+            "the workspace `summaries/` directory (evolution_summary, "
+            "best_candidates, candidate_score_table, etc.) is not created and "
+            "the prompt's summary section is replaced with a note pointing at "
+            "the raw `reference_iterations/iter_NNN/` bundles instead. The "
+            "no-summary probe (tests what the cumulative digest actually buys)."
+        ),
+    )
+    optimize.add_argument(
+        "--organized",
+        action="store_true",
+        help=(
+            "Use the organized optimizer interface: generate state.md from "
+            "RunStore, register RunStore tools, and withhold cumulative "
+            "summaries from the proposer workspace."
+        ),
+    )
+    optimize.add_argument(
+        "--organized-include-summaries",
+        action="store_true",
+        help=(
+            "With --organized, also copy the cumulative summaries/ directory "
+            "into the proposer workspace. This is an ablation of organized "
+            "state.md + tools with summaries still available."
+        ),
+    )
     optimize.add_argument("--longmemeval-variant", choices=("s", "m", "oracle"), default="s")
     optimize.add_argument("--longmemeval-data-path", type=Path, default=None)
     optimize.add_argument("--longmemeval-split-path", type=Path, default=None)
@@ -941,6 +984,10 @@ def main() -> int:
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                     diagnose=args.diagnose,
+                    disable_historian=args.no_historian,
+                    summaries_in_workspace=_summaries_in_workspace(args),
+                    organized=args.organized,
+                    organized_include_summaries=args.organized_include_summaries,
                 )
             )
             payload = optimizer.run()
@@ -1002,6 +1049,10 @@ def main() -> int:
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                     diagnose=args.diagnose,
+                    disable_historian=args.no_historian,
+                    summaries_in_workspace=_summaries_in_workspace(args),
+                    organized=args.organized,
+                    organized_include_summaries=args.organized_include_summaries,
                 )
             )
             payload = optimizer.run()
@@ -1074,6 +1125,10 @@ def main() -> int:
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                     diagnose=args.diagnose,
+                    disable_historian=args.no_historian,
+                    summaries_in_workspace=_summaries_in_workspace(args),
+                    organized=args.organized,
+                    organized_include_summaries=args.organized_include_summaries,
                 )
             )
             payload = optimizer.run()
@@ -1140,6 +1195,10 @@ def main() -> int:
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                     diagnose=args.diagnose,
+                    disable_historian=args.no_historian,
+                    summaries_in_workspace=_summaries_in_workspace(args),
+                    organized=args.organized,
+                    organized_include_summaries=args.organized_include_summaries,
                 )
             )
             payload = optimizer.run()
@@ -1203,6 +1262,10 @@ def main() -> int:
                 trace_baseline_path=args.trace_baseline,
                 proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
                 diagnose=args.diagnose,
+                disable_historian=args.no_historian,
+                summaries_in_workspace=_summaries_in_workspace(args),
+                organized=args.organized,
+                organized_include_summaries=args.organized_include_summaries,
             )
         )
         payload = optimizer.run()
@@ -1221,6 +1284,14 @@ def _csv_many(values: list[str] | tuple[str, ...]) -> list[str]:
     for value in values:
         out.extend(_csv(value))
     return out
+
+
+def _summaries_in_workspace(args: argparse.Namespace) -> bool:
+    if args.no_summary:
+        return False
+    if args.organized and not args.organized_include_summaries:
+        return False
+    return True
 
 
 def _load_project_env() -> None:
