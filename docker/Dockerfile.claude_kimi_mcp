@@ -1,0 +1,17 @@
+# Patch the bundled Claude Code CLI inside docker-claude-kimi and add the
+# Python MCP SDK required by Optimizer1's evidence-tools server.
+#
+# Rebuild:
+#   docker build -t docker-claude-kimi:2.1.138-mcp -t docker-claude-kimi:latest \
+#     -f docker/Dockerfile.claude_kimi_mcp docker/
+#
+# Smoke checks:
+#   docker run --rm docker-claude-kimi:latest claude --version
+#   docker run --rm docker-claude-kimi:latest python -c 'import mcp'
+FROM docker-claude-kimi:latest
+
+ENV DISABLE_AUTOUPDATER=1
+
+RUN npm install -g @anthropic-ai/claude-code@2.1.138 \
+    && python -m pip install --no-cache-dir 'mcp>=1.0' \
+    && claude --version

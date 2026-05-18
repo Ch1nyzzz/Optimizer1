@@ -31,11 +31,13 @@ from optimizer1.claude_runner import (
 )
 from optimizer1.dynamic import load_candidate_scaffold
 from optimizer1.evaluation import EvaluationRunner, run_initial_frontier
+from optimizer1.evidence_store import EvidenceStore
 from optimizer1.locomo import default_data_path, load_locomo_examples, prepare_locomo, select_split
 from optimizer1.model import DEFAULT_BASE_URL, DEFAULT_MODEL
 from optimizer1.optimization_cells import get_target_cells
 from optimizer1.pareto import ParetoPoint, pareto_frontier, save_frontier
 from optimizer1.post_eval import write_diff_digest, write_post_eval_artifacts
+from optimizer1.run_store import RunStore, diff_stats
 from optimizer1.traces import TraceHarness, has_adapter
 from optimizer1.proposer_prompt import build_progressive_proposer_prompt
 from optimizer1.scaffolds import DEFAULT_EVOLUTION_SEED_SCAFFOLDS, DEFAULT_SCAFFOLD_TOP_KS
@@ -128,6 +130,22 @@ class OptimizerConfig:
     trace_baseline_path: Path | None = None
     proposer_show_trace_harness_section: bool = True
     diagnose: bool = False
+    # When True, the stagnation-forensics historian subagent (otherwise
+    # offered to the pareto / curai / curaii policies once a stagnation
+    # streak begins) is disabled, so a ``--selection-policy pareto`` run
+    # differs from a ``--selection-policy default`` run only in the patch
+    # base -- a clean rebase-on/off ablation. No effect on default /
+    # progressive / bandit, which never run the historian.
+    disable_historian: bool = False
+    # When False, the cumulative cross-session summary (the workspace
+    # ``summaries/`` directory of structured logs, and the corresponding
+    # prompt section) is withheld from the proposer -- the no-summary probe.
+    summaries_in_workspace: bool = True
+    # Organized mode uses generated state.md + RunStore tools as the
+    # proposer's historical interface. Summaries remain generated on the
+    # run side for compatibility, but are not copied into the workspace.
+    organized: bool = False
+    organized_include_summaries: bool = False
 
 
 class LocomoOptimizer:
@@ -154,6 +172,11 @@ class LocomoOptimizer:
         self.diff_summary_path = self.run_dir / "diff_summary.jsonl"
         self._validate_proposer_sandbox_policy()
         self._validate_proposer_agent()
+        self.run_store = RunStore(
+            self.run_dir,
+            benchmark=self.workspace_spec.benchmark,
+        )
+        self.evidence_store = EvidenceStore(self.run_dir)
         self.trace_harness: TraceHarness = self._build_trace_harness()
 
     def _build_trace_harness(self) -> TraceHarness:
@@ -291,6 +314,9 @@ class LocomoOptimizer:
                 candidates=candidates,
                 selection_policy=self.config.selection_policy,
             )
+            self.run_store.record_eval(0, candidates)
+            self.run_store.commit_iteration(0)
+            self._refresh_evidence_store(0)
 
         self._save_best_candidates(candidates)
         self._refresh_run_indexes(candidates)
@@ -352,6 +378,8 @@ class LocomoOptimizer:
                 iteration=iteration,
                 candidates=evaluated,
             )
+            self.run_store.record_eval(iteration, evaluated)
+            self._refresh_evidence_store(iteration)
             if self.config.selection_policy in {"progressive", "curai", "curaii", "pareto"}:
                 # pareto's advance signal is "passrate strictly beat the
                 # historical best"; curai / curaii / progressive treat
@@ -451,7 +479,11 @@ class LocomoOptimizer:
         # Stagnation forensics is offered to any policy that maintains a
         # stagnation_count via progressive_state.json (pareto, curai,
         # curaii). The historian subagent runs once stagnation_count >= 1.
-        stagnation_eligible_policy = policy_name in {"pareto", "curai", "curaii"}
+        # `--no-historian` opts out, leaving the pareto base rebase intact.
+        stagnation_eligible_policy = (
+            policy_name in {"pareto", "curai", "curaii"}
+            and not self.config.disable_historian
+        )
         stagnation_count = (
             int(self._load_progressive_state().get("stagnation_count") or 0)
             if stagnation_eligible_policy
@@ -504,6 +536,24 @@ class LocomoOptimizer:
             if base_candidate is not None:
                 curaii_base_passrate = base_candidate.passrate
                 curaii_base_average_score = base_candidate.average_score
+        state_base_iter = curaii_base_iter
+        if self.config.organized and state_base_iter is None:
+            state_base_iter = self._state_snapshot_base_iteration(
+                existing_candidates,
+                iteration=iteration,
+            )
+        self.run_store.begin_iteration(
+            iteration,
+            as_of_iteration=max(0, iteration - 1),
+            base_iteration=state_base_iter if self.config.organized else curaii_base_iter,
+            status="running",
+        )
+        if self.config.organized:
+            self._write_state_md(
+                iteration=iteration,
+                as_of_iteration=max(0, iteration - 1),
+                base_iteration=state_base_iter,
+            )
         for attempt in range(1, max_attempts + 1):
             if bandit_policy:
                 refs_override: tuple[int, ...] | None = tuple(
@@ -538,6 +588,7 @@ class LocomoOptimizer:
                 run_dir=workspace_dir,
                 pending_eval_path=workspace_pending_eval_path,
                 summaries_dir=workspace_dir / "summaries",
+                include_summaries=self._summaries_in_workspace_enabled(),
                 reference_iterations_dir=workspace_dir / "reference_iterations",
                 generated_dir=workspace_generated_dir,
                 source_snapshot_dir=workspace_source_snapshot_dir,
@@ -567,6 +618,8 @@ class LocomoOptimizer:
                 current_base_iter=curaii_base_iter,
                 current_base_passrate=curaii_base_passrate,
                 current_base_average_score=curaii_base_average_score,
+                state_path=workspace_dir / "state.md" if self.config.organized else None,
+                organized=self.config.organized,
                 trace_harness_dir=(
                     workspace_traces_dir
                     if self.config.proposer_show_trace_harness_section
@@ -872,6 +925,10 @@ class LocomoOptimizer:
             selection_policy=policy_name,
             proposer_call_dir=str(call_dir),
         )
+        self.run_store.record_eval(iteration, evaluated)
+        if evaluated:
+            self.run_store.commit_iteration(iteration)
+        self._refresh_evidence_store(iteration)
         self._refresh_run_indexes(existing_candidates + evaluated)
         return evaluated
 
@@ -930,7 +987,8 @@ class LocomoOptimizer:
         for dest in (call_dir / "assignment.json", workspace_dir / "assignment.json"):
             dest.write_text(json.dumps(assignment, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        self._copy_workspace_summaries(workspace_dir / "summaries")
+        if self._summaries_in_workspace_enabled():
+            self._copy_workspace_summaries(workspace_dir / "summaries")
         self._copy_workspace_traces(workspace_dir / "traces")
         self._copy_reference_iterations(
             workspace_dir / "reference_iterations",
@@ -957,6 +1015,9 @@ class LocomoOptimizer:
             pending_eval_path=workspace_dir / "pending_eval.json",
             bandit_policy=bandit_policy,
         )
+        self._copy_workspace_state(workspace_dir / "state.md")
+        self._prepare_workspace_evidence_store(iteration)
+        self._deploy_mcp_server_assets(workspace_dir)
         self._write_proposer_agent_config(workspace_dir)
         self._deploy_subagent_assets(workspace_dir)
         return workspace_dir, reference_iterations
@@ -1065,24 +1126,33 @@ class LocomoOptimizer:
                 )
 
     def _write_proposer_agent_config(self, workspace_dir: Path) -> None:
-        """Register the trace MCP server in the Claude proposer's settings.
+        """Register proposer-facing MCP servers in Claude settings.
 
         Writes ``<workspace>/.claude/settings.local.json`` with an
-        ``mcpServers`` entry. Skipped when the proposer prompt's
-        trace-harness section is suppressed — under that ablation we
-        want the proposer to have no access to trace tools at all.
+        ``mcpServers`` entry. Skipped when the trace-harness section is
+        suppressed; in that ablation the proposer gets no historical
+        query tools.
         """
 
         if not self.config.proposer_show_trace_harness_section:
             return
-        env = self._mcp_server_env(workspace_dir)
-        cmd_argv = [sys.executable, "-m", "optimizer1.traces.mcp_server"]
-        self._write_claude_settings(workspace_dir, cmd_argv=cmd_argv, env=env)
+        evidence_env = self._evidence_mcp_server_env(workspace_dir)
+        command = self._mcp_python_command()
+        self._write_claude_settings(
+            workspace_dir,
+            servers={
+                "evidence-tools": {
+                    "command": command,
+                    "args": ["-m", "optimizer1.evidence_store_mcp_server"],
+                    "env": evidence_env,
+                },
+            },
+        )
 
     def _mcp_server_env(self, workspace_dir: Path) -> dict[str, str]:
         env: dict[str, str] = {
-            "TRACE_DB": str(workspace_dir / "traces" / "index.db"),
-            "PYTHONPATH": str(self.project_root / "src"),
+            "TRACE_DB": str(self._workspace_visible_path(workspace_dir, "traces/index.db")),
+            "PYTHONPATH": str(self._mcp_pythonpath(workspace_dir)),
         }
         # trace_similar lazily embeds historical diffs and the
         # proposer's query; it needs an OpenAI-compatible endpoint.
@@ -1093,28 +1163,58 @@ class LocomoOptimizer:
                 env[key] = value
         return env
 
+    def _runstore_mcp_server_env(self, workspace_dir: Path) -> dict[str, str]:
+        return {
+            "RUNSTORE_DB": str(self._workspace_visible_path(workspace_dir, "runstore.db")),
+            "PYTHONPATH": str(self._mcp_pythonpath(workspace_dir)),
+        }
+
+    def _evidence_mcp_server_env(self, workspace_dir: Path) -> dict[str, str]:
+        evidence_db = (
+            Path("/evidence/evidence_store.db")
+            if self.config.proposer_sandbox.strip().lower() == "docker"
+            else self.evidence_store.db_path
+        )
+        return {
+            "EVIDENCE_DB": str(evidence_db),
+            "PYTHONPATH": str(self._mcp_pythonpath(workspace_dir)),
+        }
+
+    def _mcp_python_command(self) -> str:
+        if self.config.proposer_sandbox.strip().lower() == "docker":
+            return "python"
+        return sys.executable
+
+    def _mcp_pythonpath(self, workspace_dir: Path) -> Path:
+        return self._workspace_visible_path(workspace_dir, ".optimizer1_mcp_src")
+
+    def _workspace_visible_path(self, workspace_dir: Path, rel: str) -> Path:
+        if self.config.proposer_sandbox.strip().lower() == "docker":
+            return Path(self.config.proposer_docker_workspace or "/workspace") / rel
+        return workspace_dir / rel
+
     def _write_claude_settings(
         self,
         workspace_dir: Path,
         *,
-        cmd_argv: list[str],
-        env: dict[str, str],
+        servers: dict[str, dict[str, Any]],
     ) -> None:
-        """Write `<workspace>/.claude/settings.local.json` with an MCP
-        server entry. Claude Code reads this file when launched in the
-        workspace cwd and forks the MCP server as a stdio subprocess."""
+        """Write the workspace MCP server configuration.
+
+        Current Claude Code loads project-scoped MCP servers from
+        ``<workspace>/.mcp.json``.  Keep writing the older
+        ``.claude/settings.local.json`` location as a compatibility copy for
+        older CLIs, but the runner now passes ``--mcp-config .mcp.json``
+        explicitly when the file exists.
+        """
 
         settings_dir = workspace_dir / ".claude"
         settings_dir.mkdir(parents=True, exist_ok=True)
-        config = {
-            "mcpServers": {
-                "trace-tools": {
-                    "command": cmd_argv[0],
-                    "args": cmd_argv[1:],
-                    "env": env,
-                }
-            }
-        }
+        config = {"mcpServers": servers}
+        (workspace_dir / ".mcp.json").write_text(
+            json.dumps(config, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         (settings_dir / "settings.local.json").write_text(
             json.dumps(config, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -1138,6 +1238,72 @@ class LocomoOptimizer:
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
 
+    def _copy_workspace_run_store(self, dest: Path) -> None:
+        src = self.run_store.db_path
+        if src.exists():
+            shutil.copy2(src, dest)
+
+    def _prepare_workspace_evidence_store(self, iteration: int) -> None:
+        self._refresh_evidence_store(iteration)
+
+    def _deploy_mcp_server_assets(self, workspace_dir: Path) -> None:
+        src_pkg = self.project_root / "src" / "optimizer1"
+        dest_pkg = workspace_dir / ".optimizer1_mcp_src" / "optimizer1"
+        if dest_pkg.exists():
+            shutil.rmtree(dest_pkg)
+        shutil.copytree(
+            src_pkg,
+            dest_pkg,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+
+    def _write_state_md(
+        self,
+        *,
+        iteration: int,
+        as_of_iteration: int,
+        base_iteration: int | None,
+    ) -> None:
+        state_md = self.run_store.render_state_md(
+            iteration=iteration,
+            as_of_iteration=as_of_iteration,
+            benchmark=self.workspace_spec.benchmark,
+            base_iteration=base_iteration,
+        )
+        self.run_store.record_state_snapshot(iteration, state_md)
+        (self.run_dir / "state.md").write_text(state_md, encoding="utf-8")
+
+    def _copy_workspace_state(self, dest: Path) -> None:
+        if not self.config.organized:
+            return
+        src = self.run_dir / "state.md"
+        if src.exists():
+            shutil.copy2(src, dest)
+
+    def _refresh_evidence_store(self, iteration: int) -> None:
+        """Best-effort unified evidence-store refresh.
+
+        The legacy run artifacts remain the source of truth during rollout, so
+        an evidence import issue should be visible but must not burn an
+        optimization iteration.
+        """
+
+        try:
+            self.evidence_store.refresh(iteration=iteration)
+        except Exception as exc:  # noqa: BLE001 - diagnostic sidecar only
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            row = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "iteration": int(iteration),
+                "error": str(exc),
+            }
+            with (self.run_dir / "evidence_store_errors.jsonl").open(
+                "a",
+                encoding="utf-8",
+            ) as fh:
+                fh.write(json.dumps(row, ensure_ascii=False))
+                fh.write("\n")
+
     def _copy_workspace_summaries(self, summaries_dir: Path) -> None:
         summaries_dir.mkdir(parents=True, exist_ok=True)
         summary_files = (
@@ -1158,6 +1324,13 @@ class LocomoOptimizer:
                 shutil.copy2(src, dest)
             else:
                 dest.write_text(default_text, encoding="utf-8")
+
+    def _summaries_in_workspace_enabled(self) -> bool:
+        if not self.config.summaries_in_workspace:
+            return False
+        if self.config.organized and not self.config.organized_include_summaries:
+            return False
+        return True
 
     def _copy_reference_iterations(
         self,
@@ -1314,26 +1487,17 @@ class LocomoOptimizer:
         iteration = _iteration_from_dir_name(call_dir.name) or 0
         diff_path = call_dir / "diff.patch"
         text = diff_path.read_text(encoding="utf-8", errors="replace") if diff_path.exists() else ""
-        files_changed: list[str] = []
-        insertions = 0
-        deletions = 0
-        for line in text.splitlines():
-            if line.startswith("diff --git "):
-                parts = line.split()
-                if len(parts) >= 4:
-                    files_changed.append(parts[3].removeprefix("b/"))
-            elif line.startswith("+") and not line.startswith("+++"):
-                insertions += 1
-            elif line.startswith("-") and not line.startswith("---"):
-                deletions += 1
+        stats = diff_stats(text)
+        self.run_store.record_diff(iteration, text)
+        self._refresh_evidence_store(iteration)
         row = {
             "iteration": iteration,
             "iteration_dir": str(call_dir),
             "diff_path": str(diff_path),
             "diff_digest_path": str(call_dir / "diff_digest.md"),
-            "files_changed": sorted(set(files_changed)),
-            "insertions": insertions,
-            "deletions": deletions,
+            "files_changed": stats["files_changed"],
+            "insertions": stats["insertions"],
+            "deletions": stats["deletions"],
         }
         rows: list[dict[str, Any]] = []
         if self.diff_summary_path.exists():
@@ -1721,7 +1885,14 @@ class LocomoOptimizer:
         docker_env = _dedupe_tuple(
             DEFAULT_DOCKER_ENV_VARS + self.config.proposer_docker_env
         )
-        docker_mount = _dedupe_tuple(tuple(self.config.proposer_docker_mount))
+        docker_mount = tuple(self.config.proposer_docker_mount)
+        evidence_db = self.evidence_store.db_path.resolve(strict=False)
+        if evidence_db.exists():
+            docker_mount = (
+                *docker_mount,
+                f"{evidence_db}:/evidence/evidence_store.db:ro",
+            )
+        docker_mount = _dedupe_tuple(docker_mount)
         return ProposerSandboxConfig(
             kind="docker",
             docker_image=self._effective_proposer_docker_image(),
@@ -2953,6 +3124,36 @@ class LocomoOptimizer:
             return None
         return random.choice(eligible)
 
+    def _state_snapshot_base_iteration(
+        self,
+        existing_candidates: list[CandidateResult],
+        *,
+        iteration: int,
+    ) -> int | None:
+        """Choose the comparison base rendered in organized ``state.md``.
+
+        Default-policy proposer iterations still edit a clean source snapshot;
+        this base is only the state/evidence anchor. Prefer the current quality
+        frontier's strongest evaluated iteration, and fall back to the seed
+        baseline (iteration 0) when no positive iteration exists yet.
+        """
+
+        if not existing_candidates:
+            return None
+        candidates = self._quality_frontier(existing_candidates) or existing_candidates
+        sorted_candidates = sorted(candidates, key=_candidate_score, reverse=True)
+        has_seed = False
+        for candidate in sorted_candidates:
+            candidate_iter = _candidate_iteration(candidate.candidate_id)
+            if candidate_iter is None:
+                has_seed = True
+                continue
+            if 0 <= candidate_iter < iteration:
+                return candidate_iter
+        if has_seed:
+            return 0
+        return None
+
     def _reference_iterations_for_budget(
         self,
         budget: str,
@@ -3582,6 +3783,14 @@ class LocomoOptimizer:
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        self.run_store.update_frontier(
+            as_of_iteration=max(
+                (_candidate_iteration(item.candidate_id) or 0 for item in candidates),
+                default=0,
+            ),
+            candidates=candidates,
+            frontier=frontier,
+        )
         self._sync_pareto_frontier_index(candidates, frontier)
 
     def _sync_pareto_frontier_index(
@@ -3629,6 +3838,12 @@ class LocomoOptimizer:
             "proposal": proposal or {},
             "self_best": [candidate.to_dict()],
         }
+        self.run_store.record_candidates(
+            iteration,
+            [candidate],
+            proposals_by_candidate={candidate.candidate_id: proposal or {}},
+        )
+        self._refresh_evidence_store(iteration)
         self._append_event(row)
 
     def _append_proposer_result_event(
@@ -3655,9 +3870,18 @@ class LocomoOptimizer:
             "files_written": tool_access.get("files_written", {}),
             "grep_requests": tool_access.get("grep_requests", []),
             "tool_counts": tool_access.get("tool_counts", {}),
+            "evidence_usage": tool_access.get("evidence_usage", {}),
         }
         if extra:
             row.update(extra)
+        self.run_store.record_proposer_call(
+            iteration,
+            result=result,
+            selection_policy=selection_policy,
+            proposer_agent=self.config.proposer_agent,
+            extra=extra or {},
+        )
+        self._refresh_evidence_store(iteration)
         self._append_event(row)
 
     def _aggregate_proposer_metrics(self) -> dict[str, Any]:
@@ -3679,6 +3903,14 @@ class LocomoOptimizer:
             "read_lines": 0,
             "write_file_calls": 0,
             "written_lines": 0,
+            "runstore_tool_calls": 0,
+            "runstore_trace_tool_calls": 0,
+            "runstore_mod_tool_calls": 0,
+            "raw_trace_file_reads": 0,
+            "raw_reference_file_reads": 0,
+            "raw_summary_file_reads": 0,
+            "raw_evidence_file_reads": 0,
+            "evidence_usage_events": 0,
         }
         tool_counts: dict[str, int] = {}
         unique_files_read: set[str] = set()
@@ -3714,6 +3946,20 @@ class LocomoOptimizer:
             for key in ("estimated_cost_usd", "duration_s"):
                 totals[key] += _float_metric(metrics.get(key))
 
+            evidence_usage = row.get("evidence_usage") or metrics.get("evidence_usage") or {}
+            if isinstance(evidence_usage, dict):
+                for key in (
+                    "runstore_tool_calls",
+                    "runstore_trace_tool_calls",
+                    "runstore_mod_tool_calls",
+                    "raw_trace_file_reads",
+                    "raw_reference_file_reads",
+                    "raw_summary_file_reads",
+                    "raw_evidence_file_reads",
+                    "evidence_usage_events",
+                ):
+                    totals[key] += _int_metric(evidence_usage.get(key))
+
             row_tool_counts = row.get("tool_counts") or metrics.get("tool_counts") or {}
             if isinstance(row_tool_counts, dict):
                 for name, count in row_tool_counts.items():
@@ -3729,6 +3975,10 @@ class LocomoOptimizer:
         totals["duration_s"] = round(totals["duration_s"], 3)
         totals["unique_files_read"] = len(unique_files_read)
         totals["tool_counts"] = dict(sorted(tool_counts.items()))
+        events = totals["evidence_usage_events"]
+        totals["evidence_usage_rate"] = (
+            round(totals["runstore_tool_calls"] / events, 4) if events else 0.0
+        )
         return totals
 
     def _append_event(self, row: dict[str, Any]) -> None:
