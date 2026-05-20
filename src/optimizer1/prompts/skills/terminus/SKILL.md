@@ -113,42 +113,42 @@ mechanism from summaries alone.
 <!-- END MODE:default -->
 <!-- MODE:organized -->
 Read `state.md` first for orientation — it is a current state snapshot only, not
-evidence, not diagnosis, not a plan. Then use the `evidence-tools` MCP server to
+evidence, not diagnosis, not a plan. Then use the `runstore-tools` MCP server to
 inspect candidate outcomes, iteration comparisons, task histories, traces, and
 modifications before opening raw files. Use the tool results to decide which raw
 `reference_iterations/` and `traces/` files to read for verification and
 concrete excerpts. Cumulative summary files are not provided in this mode.
 
-The `evidence-tools` MCP server exposes:
-- raw artifact tools — `mcp__evidence-tools__evidence_artifact_list`, `mcp__evidence-tools__evidence_artifact_get`,
-  `mcp__evidence-tools__evidence_artifact_search`
-- structured fact tools — `mcp__evidence-tools__evidence_fact_state`,
-  `mcp__evidence-tools__evidence_fact_candidate_outcome`, `mcp__evidence-tools__evidence_fact_compare_iterations`,
-  `mcp__evidence-tools__evidence_fact_task_history`, `mcp__evidence-tools__evidence_fact_trace`,
-  `mcp__evidence-tools__evidence_fact_modification`, `mcp__evidence-tools__evidence_fact_proposer_call`,
-  `mcp__evidence-tools__evidence_fact_file_history`, `mcp__evidence-tools__evidence_fact_proposal`
-- evidence-link tools — `mcp__evidence-tools__evidence_link_for`, `mcp__evidence-tools__evidence_link_explain_iteration`,
-  `mcp__evidence-tools__evidence_link_explain_proposal`, `mcp__evidence-tools__evidence_link_chain_task`
+The `runstore-tools` MCP server exposes:
+- raw artifact tools — `mcp__runstore-tools__runstore_artifact_list`, `mcp__runstore-tools__runstore_artifact_get`,
+  `mcp__runstore-tools__runstore_artifact_search`
+- structured fact tools — `mcp__runstore-tools__runstore_fact_state`,
+  `mcp__runstore-tools__runstore_fact_candidate_outcome`, `mcp__runstore-tools__runstore_fact_compare_iterations`,
+  `mcp__runstore-tools__runstore_fact_task_history`, `mcp__runstore-tools__runstore_fact_trace`,
+  `mcp__runstore-tools__runstore_fact_modification`, `mcp__runstore-tools__runstore_fact_proposer_call`,
+  `mcp__runstore-tools__runstore_fact_file_history`, `mcp__runstore-tools__runstore_fact_proposal`
+- evidence-link tools — `mcp__runstore-tools__runstore_link_for`, `mcp__runstore-tools__runstore_link_explain_iteration`,
+  `mcp__runstore-tools__runstore_link_explain_proposal`, `mcp__runstore-tools__runstore_link_chain_task`
 <!-- END MODE:organized -->
 <!-- MODE:organized-summaries -->
 Read `state.md` first for orientation — it is a current state snapshot only, not
-evidence, not diagnosis, not a plan. Then use the `evidence-tools` MCP server to
+evidence, not diagnosis, not a plan. Then use the `runstore-tools` MCP server to
 inspect candidate outcomes, iteration comparisons, task histories, traces, and
 modifications before opening raw files. Cumulative summary files are also
 available in this ablation; treat them only as orientation — evidence claims
-should be grounded in EvidenceStore tool results or raw trace/reference
+should be grounded in RunStore tool results or raw trace/reference
 excerpts.
 
-The `evidence-tools` MCP server exposes:
-- raw artifact tools — `mcp__evidence-tools__evidence_artifact_list`, `mcp__evidence-tools__evidence_artifact_get`,
-  `mcp__evidence-tools__evidence_artifact_search`
-- structured fact tools — `mcp__evidence-tools__evidence_fact_state`,
-  `mcp__evidence-tools__evidence_fact_candidate_outcome`, `mcp__evidence-tools__evidence_fact_compare_iterations`,
-  `mcp__evidence-tools__evidence_fact_task_history`, `mcp__evidence-tools__evidence_fact_trace`,
-  `mcp__evidence-tools__evidence_fact_modification`, `mcp__evidence-tools__evidence_fact_proposer_call`,
-  `mcp__evidence-tools__evidence_fact_file_history`, `mcp__evidence-tools__evidence_fact_proposal`
-- evidence-link tools — `mcp__evidence-tools__evidence_link_for`, `mcp__evidence-tools__evidence_link_explain_iteration`,
-  `mcp__evidence-tools__evidence_link_explain_proposal`, `mcp__evidence-tools__evidence_link_chain_task`
+The `runstore-tools` MCP server exposes:
+- raw artifact tools — `mcp__runstore-tools__runstore_artifact_list`, `mcp__runstore-tools__runstore_artifact_get`,
+  `mcp__runstore-tools__runstore_artifact_search`
+- structured fact tools — `mcp__runstore-tools__runstore_fact_state`,
+  `mcp__runstore-tools__runstore_fact_candidate_outcome`, `mcp__runstore-tools__runstore_fact_compare_iterations`,
+  `mcp__runstore-tools__runstore_fact_task_history`, `mcp__runstore-tools__runstore_fact_trace`,
+  `mcp__runstore-tools__runstore_fact_modification`, `mcp__runstore-tools__runstore_fact_proposer_call`,
+  `mcp__runstore-tools__runstore_fact_file_history`, `mcp__runstore-tools__runstore_fact_proposal`
+- evidence-link tools — `mcp__runstore-tools__runstore_link_for`, `mcp__runstore-tools__runstore_link_explain_iteration`,
+  `mcp__runstore-tools__runstore_link_explain_proposal`, `mcp__runstore-tools__runstore_link_chain_task`
 <!-- END MODE:organized-summaries -->
 
 ## Quality gate

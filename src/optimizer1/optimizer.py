@@ -31,7 +31,6 @@ from optimizer1.claude_runner import (
 )
 from optimizer1.dynamic import load_candidate_scaffold
 from optimizer1.evaluation import EvaluationRunner, run_initial_frontier
-from optimizer1.evidence_store import EvidenceStore
 from optimizer1.locomo import default_data_path, load_locomo_examples, prepare_locomo, select_split
 from optimizer1.model import DEFAULT_BASE_URL, DEFAULT_MODEL
 from optimizer1.optimization_cells import get_target_cells
@@ -173,7 +172,6 @@ class LocomoOptimizer:
             self.run_dir,
             benchmark=self.workspace_spec.benchmark,
         )
-        self.evidence_store = EvidenceStore(self.run_dir)
         self.trace_harness: TraceHarness = self._build_trace_harness()
 
     def _build_trace_harness(self) -> TraceHarness:
@@ -323,7 +321,7 @@ class LocomoOptimizer:
             )
             self.run_store.record_eval(0, candidates)
             self.run_store.commit_iteration(0)
-            self._refresh_evidence_store(0)
+            self._refresh_run_store(0)
 
         self._save_best_candidates(candidates)
         self._refresh_run_indexes(candidates)
@@ -386,7 +384,7 @@ class LocomoOptimizer:
                 candidates=evaluated,
             )
             self.run_store.record_eval(iteration, evaluated)
-            self._refresh_evidence_store(iteration)
+            self._refresh_run_store(iteration)
             if self.config.selection_policy in {"progressive", "curai", "curaii", "pareto"}:
                 # pareto's advance signal is "passrate strictly beat the
                 # historical best"; curai / curaii / progressive treat
@@ -890,7 +888,7 @@ class LocomoOptimizer:
         self.run_store.record_eval(iteration, evaluated)
         if evaluated:
             self.run_store.commit_iteration(iteration)
-        self._refresh_evidence_store(iteration)
+        self._refresh_run_store(iteration)
         self._refresh_run_indexes(existing_candidates + evaluated)
         return evaluated
 
@@ -978,7 +976,7 @@ class LocomoOptimizer:
             bandit_policy=bandit_policy,
         )
         self._copy_workspace_state(workspace_dir / "state.md")
-        self._prepare_workspace_evidence_store(iteration)
+        self._prepare_workspace_run_store(iteration)
         self._deploy_mcp_server_assets(workspace_dir)
         self._write_proposer_agent_config(workspace_dir)
         self._deploy_proposer_skill(workspace_dir)
@@ -990,32 +988,32 @@ class LocomoOptimizer:
     def _codex_mcp_servers(self, workspace_dir: Path) -> dict[str, dict[str, Any]]:
         """Build the per-invocation MCP server spec for Codex.
 
-        Returns ``{}`` when the evidence-tools surface is disabled (the
+        Returns ``{}`` when the runstore-tools surface is disabled (the
         ablation that hides the trace-harness section also disables the
-        evidence-store tools). Mirrors ``_write_proposer_agent_config``
+        runstore tools). Mirrors ``_write_proposer_agent_config``
         on the Claude path, but emits a Python-dict spec that the runner
-        translates into ``-c mcp_servers.evidence-tools.*`` overrides.
+        translates into ``-c mcp_servers.runstore-tools.*`` overrides.
 
         Codex spawns MCP server subprocesses with the codex session's
-        cwd (the workspace) as their working directory. EVIDENCE_DB and
-        PYTHONPATH come out of ``_evidence_mcp_server_env`` as relative
+        cwd (the workspace) as their working directory. RUNSTORE_DB and
+        PYTHONPATH come out of ``_runstore_mcp_server_env`` as relative
         paths anchored at the project root, so we resolve them to
         absolute here — otherwise the MCP server would try to open
-        ``<workspace>/runs/<run>/evidence_store.db`` and fail.
+        ``<workspace>/runs/<run>/runstore.db`` and fail.
         """
 
         if not self.config.proposer_show_trace_harness_section:
             return {}
-        evidence_env = dict(self._evidence_mcp_server_env(workspace_dir))
-        for key in ("EVIDENCE_DB", "PYTHONPATH"):
-            value = evidence_env.get(key)
+        runstore_env = dict(self._runstore_mcp_server_env(workspace_dir))
+        for key in ("RUNSTORE_DB", "PYTHONPATH"):
+            value = runstore_env.get(key)
             if value:
-                evidence_env[key] = str(Path(value).resolve(strict=False))
+                runstore_env[key] = str(Path(value).resolve(strict=False))
         return {
-            "evidence-tools": {
+            "runstore-tools": {
                 "command": self._mcp_python_command(),
-                "args": ["-m", "optimizer1.evidence_store_mcp_server"],
-                "env": evidence_env,
+                "args": ["-m", "optimizer1.run_store_mcp_server"],
+                "env": runstore_env,
             },
         }
 
@@ -1116,8 +1114,8 @@ class LocomoOptimizer:
         query tools.
 
         No-op when the Codex proposer is selected: Codex has no
-        per-workspace MCP config file; the evidence-tools server is
-        injected at exec time via ``-c mcp_servers.evidence-tools.*``
+        per-workspace MCP config file; the runstore-tools server is
+        injected at exec time via ``-c mcp_servers.runstore-tools.*``
         flags from :meth:`_codex_mcp_servers`.
         """
 
@@ -1125,15 +1123,15 @@ class LocomoOptimizer:
             return
         if not self.config.proposer_show_trace_harness_section:
             return
-        evidence_env = self._evidence_mcp_server_env(workspace_dir)
+        runstore_env = self._runstore_mcp_server_env(workspace_dir)
         command = self._mcp_python_command()
         self._write_claude_settings(
             workspace_dir,
             servers={
-                "evidence-tools": {
+                "runstore-tools": {
                     "command": command,
-                    "args": ["-m", "optimizer1.evidence_store_mcp_server"],
-                    "env": evidence_env,
+                    "args": ["-m", "optimizer1.run_store_mcp_server"],
+                    "env": runstore_env,
                 },
             },
         )
@@ -1153,19 +1151,13 @@ class LocomoOptimizer:
         return env
 
     def _runstore_mcp_server_env(self, workspace_dir: Path) -> dict[str, str]:
-        return {
-            "RUNSTORE_DB": str(self._workspace_visible_path(workspace_dir, "runstore.db")),
-            "PYTHONPATH": str(self._mcp_pythonpath(workspace_dir)),
-        }
-
-    def _evidence_mcp_server_env(self, workspace_dir: Path) -> dict[str, str]:
-        evidence_db = (
-            Path("/evidence/evidence_store.db")
+        runstore_db = (
+            Path("/runstore/runstore.db")
             if self.config.proposer_sandbox.strip().lower() == "docker"
-            else self.evidence_store.db_path
+            else self.run_store.db_path
         )
         return {
-            "EVIDENCE_DB": str(evidence_db),
+            "RUNSTORE_DB": str(runstore_db),
             "PYTHONPATH": str(self._mcp_pythonpath(workspace_dir)),
         }
 
@@ -1232,8 +1224,8 @@ class LocomoOptimizer:
         if src.exists():
             shutil.copy2(src, dest)
 
-    def _prepare_workspace_evidence_store(self, iteration: int) -> None:
-        self._refresh_evidence_store(iteration)
+    def _prepare_workspace_run_store(self, iteration: int) -> None:
+        self._refresh_run_store(iteration)
 
     def _deploy_mcp_server_assets(self, workspace_dir: Path) -> None:
         src_pkg = self.project_root / "src" / "optimizer1"
@@ -1269,16 +1261,16 @@ class LocomoOptimizer:
         if src.exists():
             shutil.copy2(src, dest)
 
-    def _refresh_evidence_store(self, iteration: int) -> None:
-        """Best-effort unified evidence-store refresh.
+    def _refresh_run_store(self, iteration: int) -> None:
+        """Best-effort RunStore trace/artifact refresh.
 
-        The legacy run artifacts remain the source of truth during rollout, so
-        an evidence import issue should be visible but must not burn an
+        The incremental RunStore writes are the source of truth; a
+        trace/artifact import issue should be visible but must not burn an
         optimization iteration.
         """
 
         try:
-            self.evidence_store.refresh(iteration=iteration)
+            self.run_store.refresh(iteration=iteration)
         except Exception as exc:  # noqa: BLE001 - diagnostic sidecar only
             self.run_dir.mkdir(parents=True, exist_ok=True)
             row = {
@@ -1286,7 +1278,7 @@ class LocomoOptimizer:
                 "iteration": int(iteration),
                 "error": str(exc),
             }
-            with (self.run_dir / "evidence_store_errors.jsonl").open(
+            with (self.run_dir / "runstore_refresh_errors.jsonl").open(
                 "a",
                 encoding="utf-8",
             ) as fh:
@@ -1478,7 +1470,7 @@ class LocomoOptimizer:
         text = diff_path.read_text(encoding="utf-8", errors="replace") if diff_path.exists() else ""
         stats = diff_stats(text)
         self.run_store.record_diff(iteration, text)
-        self._refresh_evidence_store(iteration)
+        self._refresh_run_store(iteration)
         row = {
             "iteration": iteration,
             "iteration_dir": str(call_dir),
@@ -1734,8 +1726,8 @@ class LocomoOptimizer:
         if self._uses_claude_subagent_proposer() and name == "proposer":
             kwargs["claude_append_system_prompt"] = self._resolve_proposer_skill()
         # Codex has no per-workspace MCP config flag like Claude's
-        # --mcp-config: we inject the evidence-tools server via
-        # -c mcp_servers.evidence-tools.* on every exec instead.
+        # --mcp-config: we inject the runstore-tools server via
+        # -c mcp_servers.runstore-tools.* on every exec instead.
         if self._uses_codex_proposer() and cwd is not None:
             kwargs["codex_mcp_servers"] = self._codex_mcp_servers(cwd)
 
@@ -1883,11 +1875,11 @@ class LocomoOptimizer:
             DEFAULT_DOCKER_ENV_VARS + self.config.proposer_docker_env
         )
         docker_mount = tuple(self.config.proposer_docker_mount)
-        evidence_db = self.evidence_store.db_path.resolve(strict=False)
-        if evidence_db.exists():
+        runstore_db = self.run_store.db_path.resolve(strict=False)
+        if runstore_db.exists():
             docker_mount = (
                 *docker_mount,
-                f"{evidence_db}:/evidence/evidence_store.db:ro",
+                f"{runstore_db}:/runstore/runstore.db:ro",
             )
         docker_mount = _dedupe_tuple(docker_mount)
         return ProposerSandboxConfig(
@@ -3838,7 +3830,7 @@ class LocomoOptimizer:
             [candidate],
             proposals_by_candidate={candidate.candidate_id: proposal or {}},
         )
-        self._refresh_evidence_store(iteration)
+        self._refresh_run_store(iteration)
         self._append_event(row)
 
     def _append_proposer_result_event(
@@ -3876,7 +3868,7 @@ class LocomoOptimizer:
             proposer_agent=self.config.proposer_agent,
             extra=extra or {},
         )
-        self._refresh_evidence_store(iteration)
+        self._refresh_run_store(iteration)
         self._append_event(row)
 
     def _aggregate_proposer_metrics(self) -> dict[str, Any]:

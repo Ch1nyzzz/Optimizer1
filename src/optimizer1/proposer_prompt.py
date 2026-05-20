@@ -234,9 +234,9 @@ fills a diagnostic gap, read it.
                 f"- Cumulative summaries: `{summaries_display}/`"
             )
             summaries_files_block = (
-                f"- `{state_display}` — current optimizer state snapshot generated from EvidenceStore. "
+                f"- `{state_display}` — current optimizer state snapshot generated from RunStore. "
                 "Read this first. It is not evidence and not a plan.\n"
-                "- EvidenceStore MCP tools — query structured modification, trace, and outcome facts. "
+                "- RunStore MCP tools — query structured modification, trace, and outcome facts. "
                 "Do not open or copy the backing SQLite DB directly.\n"
                 f"{summaries_files_block}"
             )
@@ -246,9 +246,9 @@ fills a diagnostic gap, read it.
                 "- Cumulative summaries: **not provided to the proposer in organized mode**."
             )
             summaries_files_block = (
-                f"- `{state_display}` — current optimizer state snapshot generated from EvidenceStore. "
+                f"- `{state_display}` — current optimizer state snapshot generated from RunStore. "
                 "Read this first. It is not evidence and not a plan.\n"
-                "- EvidenceStore MCP tools — query structured modification, trace, and outcome facts. "
+                "- RunStore MCP tools — query structured modification, trace, and outcome facts. "
                 "Do not open or copy the backing SQLite DB directly.\n"
                 "- (no cumulative summary files in organized mode)"
             )

@@ -15,7 +15,7 @@ A skill file may carry mode-specific blocks delimited by
 keeps the block for the active mode and drops the others. Modes:
 
   - ``default`` — cumulative-summary evidence workflow.
-  - ``organized`` — state.md + EvidenceStore tools, summaries withheld.
+  - ``organized`` — state.md + RunStore tools, summaries withheld.
   - ``organized-summaries`` — organized tools with summaries kept as orientation.
 """
 

@@ -679,31 +679,27 @@ def _is_runstore_tool_name(name: str) -> bool:
     return (
         name.startswith("mcp__runstore-tools__runstore_")
         or name.startswith("runstore_")
-        or name.startswith("mcp__evidence-tools__evidence_")
-        or name.startswith("evidence_")
     )
 
 
 def _is_runstore_trace_tool_name(name: str) -> bool:
     return (
-        name.startswith("mcp__runstore-tools__runstore_trace_")
-        or name.startswith("runstore_trace_")
-        or name.startswith("mcp__evidence-tools__evidence_fact_state")
-        or name.startswith("mcp__evidence-tools__evidence_fact_candidate_outcome")
-        or name.startswith("mcp__evidence-tools__evidence_fact_compare_iterations")
-        or name.startswith("mcp__evidence-tools__evidence_fact_task_history")
-        or name.startswith("mcp__evidence-tools__evidence_fact_trace")
-        or name.startswith("mcp__evidence-tools__evidence_link_")
+        name.startswith("mcp__runstore-tools__runstore_fact_state")
+        or name.startswith("mcp__runstore-tools__runstore_fact_candidate_outcome")
+        or name.startswith("mcp__runstore-tools__runstore_fact_compare_iterations")
+        or name.startswith("mcp__runstore-tools__runstore_fact_task_history")
+        or name.startswith("mcp__runstore-tools__runstore_fact_trace")
+        or name.startswith("mcp__runstore-tools__runstore_link_")
+        or name.startswith("mcp__runstore-tools__runstore_artifact_")
     )
 
 
 def _is_runstore_mod_tool_name(name: str) -> bool:
     return (
-        name.startswith("mcp__runstore-tools__runstore_mod_")
-        or name.startswith("runstore_mod_")
-        or name.startswith("mcp__evidence-tools__evidence_fact_modification")
-        or name.startswith("mcp__evidence-tools__evidence_fact_proposer_call")
-        or name.startswith("mcp__evidence-tools__evidence_fact_file_history")
+        name.startswith("mcp__runstore-tools__runstore_fact_modification")
+        or name.startswith("mcp__runstore-tools__runstore_fact_proposer_call")
+        or name.startswith("mcp__runstore-tools__runstore_fact_file_history")
+        or name.startswith("mcp__runstore-tools__runstore_fact_proposal")
     )
 
 
