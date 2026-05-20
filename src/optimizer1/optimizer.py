@@ -79,6 +79,12 @@ class OptimizerConfig:
     claude_base_url: str = "https://api.deepseek.com/anthropic"
     claude_auth_token: str | None = None
     claude_native_auth: bool = False
+    # Codex proposer settings (used only when proposer_agent == "codex").
+    # Codex authenticates from $CODEX_HOME/auth.json (default ~/.codex),
+    # not via env tokens, so there is no codex_auth_token field.
+    codex_model: str = "gpt-5.5"
+    codex_reasoning_effort: str = "high"
+    codex_home: str = ""
     propose_timeout_s: int = 2400
     dry_run: bool = False
     max_context_chars: int = 6000
@@ -129,14 +135,6 @@ class OptimizerConfig:
     test_frontier_candidate_limit: int = 0
     trace_baseline_path: Path | None = None
     proposer_show_trace_harness_section: bool = True
-    diagnose: bool = False
-    # When True, the stagnation-forensics historian subagent (otherwise
-    # offered to the pareto / curai / curaii policies once a stagnation
-    # streak begins) is disabled, so a ``--selection-policy pareto`` run
-    # differs from a ``--selection-policy default`` run only in the patch
-    # base -- a clean rebase-on/off ablation. No effect on default /
-    # progressive / bandit, which never run the historian.
-    disable_historian: bool = False
     # When False, the cumulative cross-session summary (the workspace
     # ``summaries/`` directory of structured logs, and the corresponding
     # prompt section) is withheld from the proposer -- the no-summary probe.
@@ -162,7 +160,6 @@ class LocomoOptimizer:
         self.summary_path = self.run_dir / "evolution_summary.jsonl"
         self.generated_dir = self.run_dir / "generated"
         self.progressive_state_path = self.run_dir / "progressive_state.json"
-        self.historian_report_path = self.run_dir / "historian_report.md"
         self.bandit_state_path = self.run_dir / "bandit_state.json"
         self.candidate_score_table_path = self.run_dir / "candidate_score_table.json"
         self.retrieval_diagnostics_summary_path = (
@@ -194,9 +191,9 @@ class LocomoOptimizer:
 
     def _validate_proposer_agent(self) -> None:
         agent = self.config.proposer_agent.strip().lower()
-        if agent != "claude":
+        if agent not in {"claude", "codex"}:
             raise ValueError(
-                "Only the Claude Code proposer is supported; got "
+                "proposer_agent must be 'claude' or 'codex'; got "
                 f"proposer_agent={self.config.proposer_agent!r}"
             )
 
@@ -230,14 +227,24 @@ class LocomoOptimizer:
 
         candidates: list[CandidateResult] = []
         if self.config.baseline_dir is not None:
+            # Only filter on top_k for scaffolds that define one in
+            # DEFAULT_SCAFFOLD_TOP_KS (memgpt_source, bm25, ...). Source-only
+            # scaffolds like mini_swe_agent_source carry no top_k in their
+            # candidate config, so applying the filter would reject every
+            # candidate and break --baseline-dir on the SWE-bench / Terminus
+            # tasks. Passing None when the dict is empty also lets a user
+            # reuse an arbitrary baseline that was built without top_k
+            # variants.
+            top_k_filter = {
+                scaffold: DEFAULT_SCAFFOLD_TOP_KS[scaffold]
+                for scaffold in self.config.scaffolds
+                if scaffold in DEFAULT_SCAFFOLD_TOP_KS
+            }
             baseline_candidates = load_baseline_candidates(
                 self.config.baseline_dir,
                 split=self.config.split,
                 scaffolds=self.config.scaffolds,
-                top_k_by_scaffold={
-                    scaffold: DEFAULT_SCAFFOLD_TOP_KS.get(scaffold, 8)
-                    for scaffold in self.config.scaffolds
-                },
+                top_k_by_scaffold=top_k_filter or None,
             )
             if not baseline_candidates:
                 raise ValueError(
@@ -295,7 +302,7 @@ class LocomoOptimizer:
             }:
                 # Crashed iterations still bumped stagnation_count etc.;
                 # rebuild progressive_state.json from the surviving rows so
-                # the historian/budget heuristics see the true streak.
+                # the budget heuristics see the true streak.
                 self._rederive_progressive_state(
                     candidates, start_iteration=start_iteration
                 )
@@ -384,8 +391,8 @@ class LocomoOptimizer:
                 # pareto's advance signal is "passrate strictly beat the
                 # historical best"; curai / curaii / progressive treat
                 # joining the top-K frontier as advance. Both routes
-                # update progressive_state.json so historian can read the
-                # stagnation_count uniformly.
+                # update progressive_state.json so the budget heuristics
+                # read the stagnation_count uniformly.
                 advance_signal_ids = (
                     None
                     if self.config.selection_policy == "pareto"
@@ -476,35 +483,6 @@ class LocomoOptimizer:
         workspace_generated_dir = workspace_dir / "generated"
         reference_iterations: tuple[int, ...] = ()
         policy_name = selection_policy or ("progressive" if adaptive else "default")
-        # Stagnation forensics is offered to any policy that maintains a
-        # stagnation_count via progressive_state.json (pareto, curai,
-        # curaii). The historian subagent runs once stagnation_count >= 1.
-        # `--no-historian` opts out, leaving the pareto base rebase intact.
-        stagnation_eligible_policy = (
-            policy_name in {"pareto", "curai", "curaii"}
-            and not self.config.disable_historian
-        )
-        stagnation_count = (
-            int(self._load_progressive_state().get("stagnation_count") or 0)
-            if stagnation_eligible_policy
-            else 0
-        )
-        stagnation_active = stagnation_eligible_policy and stagnation_count >= 1
-        historian_report_exists = (
-            stagnation_active and self.historian_report_path.exists()
-        )
-        current_frontier_passrate: float | None = None
-        current_frontier_average_score: float | None = None
-        current_frontier_best_iter: int | None = None
-        if stagnation_active:
-            frontier_candidates = self._quality_frontier(existing_candidates)
-            if frontier_candidates:
-                frontier_best = max(frontier_candidates, key=_candidate_score)
-                current_frontier_passrate = frontier_best.passrate
-                current_frontier_average_score = frontier_best.average_score
-                current_frontier_best_iter = _candidate_iteration(
-                    frontier_best.candidate_id
-                )
         curaii_base_iter: int | None = None
         curaii_base_passrate: float | None = None
         curaii_base_average_score: float | None = None
@@ -570,18 +548,14 @@ class LocomoOptimizer:
                 bandit_policy=bandit_policy,
                 base_iter=curaii_base_iter,
             )
-            if historian_report_exists:
-                shutil.copy2(
-                    self.historian_report_path,
-                    workspace_dir / "historian_report.md",
-                )
             workspace_generated_dir = workspace_dir / "generated"
             workspace_source_snapshot_dir = workspace_dir / "source_snapshot"
             workspace_pending_eval_path = workspace_dir / "pending_eval.json"
             workspace_traces_dir = workspace_dir / "traces"
-            # The diagnoser is invoked by the proposer's main session via
-            # the Task tool; no pre-call here (the subagent contract is
-            # mounted through `.claude/agents/diagnoser.md`).
+            # The proposer receives its self-contained benchmark skill via
+            # the system-prompt channel (Claude --append-system-prompt /
+            # Codex AGENTS.md); the user message carries only the
+            # per-iteration assignment.
             prompt = build_progressive_proposer_prompt(
                 run_id=self.config.run_id,
                 iteration=iteration,
@@ -605,16 +579,6 @@ class LocomoOptimizer:
                 selection_policy=policy_name,
                 bandit_policy=bandit_policy,
                 benchmark_name=self._benchmark_prompt_name(),
-                stagnation_active=stagnation_active,
-                stagnation_count=stagnation_count,
-                historian_report_exists=historian_report_exists,
-                historian_via_subagent=(
-                    stagnation_active
-                    and self._uses_claude_subagent_historian()
-                ),
-                current_frontier_passrate=current_frontier_passrate,
-                current_frontier_average_score=current_frontier_average_score,
-                current_frontier_best_iter=current_frontier_best_iter,
                 current_base_iter=curaii_base_iter,
                 current_base_passrate=curaii_base_passrate,
                 current_base_average_score=curaii_base_average_score,
@@ -625,8 +589,6 @@ class LocomoOptimizer:
                     if self.config.proposer_show_trace_harness_section
                     else None
                 ),
-                diagnoser_via_subagent=self._uses_claude_subagent_diagnoser(),
-                subagent_mode=self._uses_claude_subagent_proposer(),
             )
             if retry_note:
                 prompt = f"{prompt}\n\n{retry_note}"
@@ -1019,111 +981,131 @@ class LocomoOptimizer:
         self._prepare_workspace_evidence_store(iteration)
         self._deploy_mcp_server_assets(workspace_dir)
         self._write_proposer_agent_config(workspace_dir)
-        self._deploy_subagent_assets(workspace_dir)
+        self._deploy_proposer_skill(workspace_dir)
         return workspace_dir, reference_iterations
 
-    def _uses_claude_subagent_proposer(self) -> bool:
-        """Whether the main proposer session runs as a Claude Code subagent.
+    def _uses_codex_proposer(self) -> bool:
+        return self.config.proposer_agent.strip().lower() == "codex"
 
-        Active for every Claude Code proposer run: the role/identity/
-        constraints are delivered to the model through Claude Code's
-        native subagent protocol — ``proposer.md`` becomes the subagent
-        system prompt and ``workspace.md`` becomes the auto-loaded
-        ``<workspace>/CLAUDE.md`` — instead of being concatenated into
-        the user message. Independent of ``--diagnose`` so that even a
-        baseline run gets the subagent system-prompt channel; the
-        legacy prompt-string injection path is no longer reachable.
+    def _codex_mcp_servers(self, workspace_dir: Path) -> dict[str, dict[str, Any]]:
+        """Build the per-invocation MCP server spec for Codex.
+
+        Returns ``{}`` when the evidence-tools surface is disabled (the
+        ablation that hides the trace-harness section also disables the
+        evidence-store tools). Mirrors ``_write_proposer_agent_config``
+        on the Claude path, but emits a Python-dict spec that the runner
+        translates into ``-c mcp_servers.evidence-tools.*`` overrides.
+
+        Codex spawns MCP server subprocesses with the codex session's
+        cwd (the workspace) as their working directory. EVIDENCE_DB and
+        PYTHONPATH come out of ``_evidence_mcp_server_env`` as relative
+        paths anchored at the project root, so we resolve them to
+        absolute here — otherwise the MCP server would try to open
+        ``<workspace>/runs/<run>/evidence_store.db`` and fail.
+        """
+
+        if not self.config.proposer_show_trace_harness_section:
+            return {}
+        evidence_env = dict(self._evidence_mcp_server_env(workspace_dir))
+        for key in ("EVIDENCE_DB", "PYTHONPATH"):
+            value = evidence_env.get(key)
+            if value:
+                evidence_env[key] = str(Path(value).resolve(strict=False))
+        return {
+            "evidence-tools": {
+                "command": self._mcp_python_command(),
+                "args": ["-m", "optimizer1.evidence_store_mcp_server"],
+                "env": evidence_env,
+            },
+        }
+
+    def _uses_claude_subagent_proposer(self) -> bool:
+        """Whether the proposer runs through the Claude Code CLI.
+
+        For a Claude proposer the self-contained benchmark skill is
+        delivered via ``--append-system-prompt``; for a Codex proposer
+        it is written into ``<workspace>/AGENTS.md``.
         """
 
         return self.config.proposer_agent.strip().lower() == "claude"
 
-    def _uses_claude_subagent_diagnoser(self) -> bool:
-        """Whether the diagnoser runs as a Claude Code subagent.
+    def _proposer_skill_mode(self) -> str:
+        """Return the evidence-workflow mode for the proposer skill."""
 
-        Active only when the proposer agent is Claude *and* ``--diagnose``
-        is on. In that mode the optimizer no longer pre-calls the
-        diagnoser; the proposer's main session invokes it via the Task
-        tool, and Claude Code loads the subagent's system prompt from
-        ``<workspace>/.claude/agents/diagnoser.md``.
-        """
+        if not self.config.organized:
+            return "default"
+        if self.config.organized_include_summaries:
+            return "organized-summaries"
+        return "organized"
 
-        return (
-            self.config.diagnose
-            and self._uses_claude_subagent_proposer()
+    def _proposer_skill_key(self) -> str:
+        """Return the benchmark skill key for this run."""
+
+        from optimizer1.prompts import benchmark_skill_name
+
+        return benchmark_skill_name(
+            benchmark_name=self._benchmark_prompt_name(),
+            target_system=self.config.progressive_target_system,
         )
 
-    def _uses_claude_subagent_historian(self) -> bool:
-        """Whether the historian runs as a Claude Code subagent.
+    def _resolve_proposer_skill(self) -> str:
+        """Return the resolved per-benchmark proposer skill text.
 
-        Active when the proposer agent is Claude *and* the selection
-        policy maintains a stagnation_count (pareto / curai / curaii).
-        The proposer's main session invokes the historian via the Task
-        tool only when ``stagnation_count >= 1``; the workspace asset
-        is deployed eagerly (always present for stagnation-eligible
-        policies) so the Task call resolves regardless of when
-        stagnation first kicks in.
+        The skill is the proposer's full self-contained contract for
+        this benchmark, with the active evidence-workflow mode block
+        kept. It is delivered through the system-prompt channel.
         """
 
-        return (
-            self._uses_claude_subagent_proposer()
-            and self.config.selection_policy.strip().lower()
-            in {"pareto", "curai", "curaii"}
+        from optimizer1.prompts import load_proposer_skill
+
+        return load_proposer_skill(
+            self._proposer_skill_key(), self._proposer_skill_mode()
         )
 
-    def _deploy_subagent_assets(self, workspace_dir: Path) -> None:
-        """Copy the per-workspace Claude Code subagent assets.
+    def _deploy_proposer_skill(self, workspace_dir: Path) -> None:
+        """Deploy the resolved per-benchmark proposer skill into the workspace.
 
-        Routes the canonical agent files from ``optimizer1.prompts``
-        to the locations Claude Code's protocol expects:
+        The skill is the proposer's full self-contained contract — role,
+        objective, search space, workflow, quality gate, and
+        ``pending_eval.json`` conventions — for this benchmark.
 
-          - ``proposer.md`` → ``<workspace>/.claude/agents/proposer.md``
-            (the main session runs as this subagent via
-            ``claude --agent proposer``). Deployed for every Claude
-            proposer run, regardless of ``--diagnose``.
-          - ``workspace.md`` → ``<workspace>/CLAUDE.md``
-            (auto-loaded project-level *constraints* — Quality Gate,
-            edit scope, pending_eval.json conventions, etc. — not
-            anyone's role). Deployed for every Claude proposer run.
-          - ``diagnoser.md`` → ``<workspace>/.claude/agents/diagnoser.md``
-            (invoked from the proposer via the Task tool). Deployed
-            only when ``--diagnose`` is on.
-          - ``historian.md`` → ``<workspace>/.claude/agents/historian.md``
-            (invoked from the proposer via the Task tool when the
-            optimization has stalled). Deployed for every Claude
-            proposer run on a stagnation-eligible policy
-            (``pareto`` / ``curai`` / ``curaii``); the proposer skips
-            invocation when ``stagnation_count == 0``.
+          - Codex proposer: the skill is written to ``<workspace>/AGENTS.md``,
+            which Codex auto-loads at session start.
+          - Claude proposer: the skill is delivered at invocation time via
+            ``--append-system-prompt``; an audit copy is written to
+            ``<workspace>/PROPOSER_SKILL.md``.
 
-        No-op when the proposer agent is not Claude.
+        No-op when the proposer agent is neither Codex nor Claude.
         """
 
+        if self._uses_codex_proposer():
+            self._deploy_codex_agents_md(workspace_dir, self._resolve_proposer_skill())
+            return
         if not self._uses_claude_subagent_proposer():
             return
-        from optimizer1.prompts import role_prompt_path
+        (workspace_dir / "PROPOSER_SKILL.md").write_text(
+            self._resolve_proposer_skill(), encoding="utf-8"
+        )
 
-        proposer_src = role_prompt_path("proposer")
-        diagnoser_src = role_prompt_path("diagnoser")
-        historian_src = role_prompt_path("historian")
-        workspace_src = role_prompt_path("workspace")
+    def _deploy_codex_agents_md(self, workspace_dir: Path, skill_text: str) -> None:
+        """Write the Codex-facing ``<workspace>/AGENTS.md``.
 
-        if workspace_src.exists():
-            (workspace_dir / "CLAUDE.md").write_text(
-                workspace_src.read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
-        agents_dir = workspace_dir / ".claude" / "agents"
-        agents_dir.mkdir(parents=True, exist_ok=True)
-        agent_files: list[tuple[Path, str]] = [(proposer_src, "proposer.md")]
-        if self._uses_claude_subagent_diagnoser():
-            agent_files.append((diagnoser_src, "diagnoser.md"))
-        if self._uses_claude_subagent_historian():
-            agent_files.append((historian_src, "historian.md"))
-        for src, dest_name in agent_files:
-            if src.exists():
-                (agents_dir / dest_name).write_text(
-                    src.read_text(encoding="utf-8"),
-                    encoding="utf-8",
-                )
+        Codex auto-loads ``AGENTS.md`` at the session cwd and prepends it
+        to its system prompt. We write the resolved per-benchmark proposer
+        skill — the same contract the Claude path delivers via
+        ``--append-system-prompt``.
+        """
+
+        body = (
+            "# Codex proposer — auto-loaded contract\n\n"
+            "Codex loads this file at session start. It is the proposer's "
+            "self-contained skill for this benchmark: role, objective, "
+            "search space, workflow, quality gate, and pending_eval.json "
+            "conventions. Treat it as binding for this session.\n\n"
+            "---\n\n"
+            f"{skill_text.rstrip()}\n"
+        )
+        (workspace_dir / "AGENTS.md").write_text(body, encoding="utf-8")
 
     def _write_proposer_agent_config(self, workspace_dir: Path) -> None:
         """Register proposer-facing MCP servers in Claude settings.
@@ -1132,8 +1114,15 @@ class LocomoOptimizer:
         ``mcpServers`` entry. Skipped when the trace-harness section is
         suppressed; in that ablation the proposer gets no historical
         query tools.
+
+        No-op when the Codex proposer is selected: Codex has no
+        per-workspace MCP config file; the evidence-tools server is
+        injected at exec time via ``-c mcp_servers.evidence-tools.*``
+        flags from :meth:`_codex_mcp_servers`.
         """
 
+        if self._uses_codex_proposer():
+            return
         if not self.config.proposer_show_trace_harness_section:
             return
         evidence_env = self._evidence_mcp_server_env(workspace_dir)
@@ -1733,14 +1722,22 @@ class LocomoOptimizer:
             claude_base_url=self.config.claude_base_url,
             claude_auth_token=self.config.claude_auth_token,
             claude_native_auth=self.config.claude_native_auth,
+            codex_model=self.config.codex_model,
+            codex_reasoning_effort=self.config.codex_reasoning_effort,
+            codex_home=self.config.codex_home or None,
         )
-        # The proposer always runs as the named ``.claude/agents/proposer.md``
-        # subagent — its frontmatter supplies the system prompt and tool
-        # allowlist, so the role / identity text never enters the user
-        # message. (The diagnoser, when enabled, is reached from there
-        # via the Task tool and uses its own subagent file.)
+        # The proposer's self-contained benchmark skill is delivered
+        # through the system-prompt channel via --append-system-prompt,
+        # so the role / identity / contract text never enters the user
+        # message. (Codex receives the same skill from <workspace>/AGENTS.md,
+        # written by _deploy_proposer_skill.)
         if self._uses_claude_subagent_proposer() and name == "proposer":
-            kwargs["claude_agent_name"] = "proposer"
+            kwargs["claude_append_system_prompt"] = self._resolve_proposer_skill()
+        # Codex has no per-workspace MCP config flag like Claude's
+        # --mcp-config: we inject the evidence-tools server via
+        # -c mcp_servers.evidence-tools.* on every exec instead.
+        if self._uses_codex_proposer() and cwd is not None:
+            kwargs["codex_mcp_servers"] = self._codex_mcp_servers(cwd)
 
         retries = 0
         while True:
@@ -2441,8 +2438,6 @@ class LocomoOptimizer:
             improved = bool(evaluated_ids & (frontier_ids - previous_frontier_ids))
         prior = self._load_progressive_state()
         stagnation = 0 if improved else int(prior.get("stagnation_count") or 0) + 1
-        if improved and self.historian_report_path.exists():
-            self.historian_report_path.unlink()
         if iteration < self.config.progressive_initial_low_iterations:
             next_budget = "low"
         elif improved:
@@ -3248,6 +3243,13 @@ class LocomoOptimizer:
                     "iteration_dir": str(self._iteration_dir(iteration)),
                     "is_best_passrate": candidate.candidate_id in best_passrate_ids,
                     "is_quality_frontier": candidate.candidate_id in frontier_ids,
+                    # Audit-only flag from swebench eval-gate integrity check.
+                    # Always present so dashboards can filter on it; non-SWE
+                    # runs leave it False because their evaluators don't set
+                    # this key on candidate.config.
+                    "reward_hack_attempt": bool(
+                        (candidate.config or {}).get("reward_hack_attempt", False)
+                    ),
                 }
             )
         self.candidate_score_table_path.write_text(
@@ -3540,13 +3542,6 @@ class LocomoOptimizer:
         if workspace_pending.exists():
             self._copy_if_exists(workspace_pending, self.pending_eval_path)
             self._copy_if_exists(workspace_pending, call_dir / "pending_eval.raw.json")
-
-        workspace_historian = workspace_dir / "historian_report.md"
-        if workspace_historian.exists():
-            self._copy_if_exists(workspace_historian, self.historian_report_path)
-            self._copy_if_exists(
-                workspace_historian, call_dir / "historian_report.md"
-            )
 
     def _normalize_workspace_candidate_paths(
         self,

@@ -193,7 +193,14 @@ def evidence_fact_state(as_of_iteration: int | None = None) -> dict[str, Any]:
                 f"SELECT COUNT(*) FROM {table} WHERE iteration <= ?",
                 (as_of,),
             ).fetchone()[0]
-            for table in ("candidates", "eval_results", "traces", "modifications")
+            for table in (
+                "candidates",
+                "eval_results",
+                "traces",
+                "modifications",
+                "proposals",
+                "proposal_outcomes",
+            )
         }
     return {
         "as_of_iteration": as_of,
@@ -406,6 +413,34 @@ def evidence_fact_file_history(path: str, limit: int = 50) -> list[dict[str, Any
     return [_row(row) for row in rows]
 
 
+@mcp.tool()
+def evidence_fact_proposal(
+    proposal_id: str | None = None,
+    iteration: int | None = None,
+    candidate_id: str | None = None,
+    include_outcome: bool = True,
+) -> dict[str, Any] | None:
+    """Fetch one first-class proposal and optionally its materialized outcome."""
+
+    with _connect() as conn:
+        row = _proposal(
+            conn,
+            proposal_id=proposal_id,
+            iteration=iteration,
+            candidate_id=candidate_id,
+        )
+        if row is None:
+            return None
+        out = _proposal_row(row)
+        if include_outcome:
+            outcome = conn.execute(
+                "SELECT * FROM proposal_outcomes WHERE proposal_id = ?",
+                (row["proposal_id"],),
+            ).fetchone()
+            out["outcome"] = _proposal_outcome_row(outcome) if outcome else None
+    return out
+
+
 # ---- evidence link layer -----------------------------------------
 
 
@@ -482,6 +517,90 @@ def evidence_link_explain_iteration(
 
 
 @mcp.tool()
+def evidence_link_explain_proposal(
+    proposal_id: str | None = None,
+    iteration: int | None = None,
+    candidate_id: str | None = None,
+    include_diff: bool = False,
+    include_examples: bool = True,
+    include_retrieval: bool = False,
+    max_examples: int = 20,
+) -> dict[str, Any] | None:
+    """Proposal-centered chain with outcome, breakthrough, and regression tasks."""
+
+    with _connect() as conn:
+        proposal = _proposal(
+            conn,
+            proposal_id=proposal_id,
+            iteration=iteration,
+            candidate_id=candidate_id,
+        )
+        if proposal is None:
+            return None
+        pid = str(proposal["proposal_id"])
+        iter_value = int(proposal["iteration"])
+        cid = proposal["candidate_id"]
+        outcome = conn.execute(
+            "SELECT * FROM proposal_outcomes WHERE proposal_id = ?",
+            (pid,),
+        ).fetchone()
+        links = conn.execute(
+            """
+            SELECT * FROM evidence_links
+            WHERE source_id IN (?, ?, ?)
+               OR target_id IN (?, ?, ?)
+            ORDER BY relation ASC
+            """,
+            (
+                pid,
+                _mod_id(iter_value),
+                _candidate_entity_id(iter_value, str(cid)) if cid else "",
+                pid,
+                _mod_id(iter_value),
+                _candidate_entity_id(iter_value, str(cid)) if cid else "",
+            ),
+        ).fetchall()
+        comparisons: list[dict[str, Any]] = []
+        if include_examples and outcome is not None and cid:
+            base_iteration = outcome["base_iteration"]
+            base_candidate_id = outcome["base_candidate_id"]
+            if base_iteration is not None and base_candidate_id:
+                comparisons = _comparison_rows(
+                    conn,
+                    left=int(base_iteration),
+                    right=iter_value,
+                    left_candidate_id=str(base_candidate_id),
+                    right_candidate_id=str(cid),
+                    include_retrieval=include_retrieval,
+                )
+    breakthroughs = [
+        item for item in comparisons if item["classification"] == "breakthrough_RvL"
+    ][: max(0, int(max_examples))]
+    regressions = [
+        item for item in comparisons if item["classification"] == "regressed_RvL"
+    ][: max(0, int(max_examples))]
+    return {
+        "proposal": _proposal_row(proposal),
+        "outcome": _proposal_outcome_row(outcome) if outcome else None,
+        "proposer_call": evidence_fact_proposer_call(iter_value),
+        "modification": evidence_fact_modification(iter_value, include_diff=include_diff),
+        "candidate_outcome": (
+            evidence_fact_candidate_outcome(
+                iter_value,
+                candidate_id=str(cid),
+                max_examples=5,
+                include_retrieval=include_retrieval,
+            )
+            if cid
+            else None
+        ),
+        "breakthrough_tasks": breakthroughs,
+        "regression_tasks": regressions,
+        "links": [_row(row) for row in links],
+    }
+
+
+@mcp.tool()
 def evidence_link_chain_task(
     task_id: str,
     as_of_iteration: int | None = None,
@@ -534,6 +653,42 @@ def _candidate(
         SELECT * FROM candidates
         WHERE iteration = ?
         ORDER BY passrate DESC, average_score DESC, candidate_id DESC
+        LIMIT 1
+        """,
+        (int(iteration),),
+    ).fetchone()
+
+
+def _proposal(
+    conn: sqlite3.Connection,
+    *,
+    proposal_id: str | None,
+    iteration: int | None,
+    candidate_id: str | None,
+) -> sqlite3.Row | None:
+    if proposal_id:
+        return conn.execute(
+            "SELECT * FROM proposals WHERE proposal_id = ?",
+            (proposal_id,),
+        ).fetchone()
+    if iteration is None:
+        return None
+    if candidate_id:
+        return conn.execute(
+            """
+            SELECT * FROM proposals
+            WHERE iteration = ? AND candidate_id = ?
+            """,
+            (int(iteration), candidate_id),
+        ).fetchone()
+    return conn.execute(
+        """
+        SELECT p.*
+        FROM proposals p
+        LEFT JOIN candidates c
+          ON c.iteration = p.iteration AND c.candidate_id = p.candidate_id
+        WHERE p.iteration = ?
+        ORDER BY c.passrate DESC, c.average_score DESC, p.candidate_id DESC
         LIMIT 1
         """,
         (int(iteration),),
@@ -600,6 +755,21 @@ def _candidate_row(row: sqlite3.Row) -> dict[str, Any]:
     out = _row(row)
     out["config"] = _loads(out.pop("config_json", None), {})
     out["proposal"] = _loads(out.pop("proposal_json", None), {})
+    return out
+
+
+def _proposal_row(row: sqlite3.Row) -> dict[str, Any]:
+    out = _row(row)
+    out["expected_effect"] = _loads(out.pop("expected_effect_json", None), None)
+    out["risk"] = _loads(out.pop("risk_json", None), None)
+    out["evidence_refs"] = _loads(out.pop("evidence_refs_json", None), None)
+    out["proposal"] = _loads(out.pop("proposal_json", None), {})
+    return out
+
+
+def _proposal_outcome_row(row: sqlite3.Row) -> dict[str, Any]:
+    out = _row(row)
+    out["outcome_summary"] = _loads(out.pop("outcome_summary_json", None), {})
     return out
 
 
@@ -671,6 +841,10 @@ def _mod_id(iteration: int) -> str:
 
 def _call_id(iteration: int) -> str:
     return f"{_run_id()}:call:{int(iteration):03d}"
+
+
+def _candidate_entity_id(iteration: int, candidate_id: str) -> str:
+    return f"{_run_id()}:candidate:{int(iteration):03d}:{candidate_id}"
 
 
 def _run_id() -> str:

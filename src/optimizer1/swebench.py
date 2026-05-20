@@ -18,6 +18,17 @@ from optimizer1.schemas import CandidateResult, TaskResult
 DEFAULT_MINI_SWE_AGENT_SOURCE_PATH = Path("references/vendor/mini-swe-agent")
 DEFAULT_MINI_SWE_AGENT_NAME = "mini_swe_agent_source"
 
+# Eval gate entry script. The trusted copy lives in the repo root; the same
+# filename inside a candidate snapshot is a read-only reference and must never
+# be invoked. The list covers every shape we have observed in launcher
+# eval-command strings.
+EVAL_ENTRY_SCRIPT_FILENAME = "run_miniswe_swebench_single.py"
+EVAL_ENTRY_RELATIVE_FORMS = (
+    "scripts/run_miniswe_swebench_single.py",
+    "./scripts/run_miniswe_swebench_single.py",
+    "run_miniswe_swebench_single.py",
+)
+
 
 @dataclass(frozen=True)
 class SwebenchInstance:
@@ -111,6 +122,7 @@ class MiniSweAgentSourceRunner:
         max_eval_workers: int = 1,
         dry_run: bool = False,
         force: bool = False,
+        project_root: Path | None = None,
     ) -> None:
         self.instances = instances
         self.out_dir = out_dir
@@ -118,6 +130,13 @@ class MiniSweAgentSourceRunner:
         self.max_eval_workers = max(1, int(max_eval_workers))
         self.dry_run = dry_run
         self.force = force
+        # Used to rewrite the eval-gate entry script into an absolute path so
+        # proposer edits to the in-candidate copy can never affect grading.
+        self.project_root = (
+            Path(project_root).resolve()
+            if project_root is not None
+            else Path(__file__).resolve().parents[2]
+        )
 
     def evaluate_candidate(
         self,
@@ -262,6 +281,14 @@ class MiniSweAgentSourceRunner:
             patch_path=patch_path,
             instance=instance,
         )
+        # Same lockdown rule as the eval command: run_miniswe_swebench_single.py
+        # is platform scaffolding, not a candidate-edited file. Force the
+        # absolute repo-root path regardless of how the launcher wrote it,
+        # so vendored baseline cwd (no scripts/) and proposer-edited
+        # candidate cwd both invoke the trusted entry. The agent's
+        # behaviour comes from --source-path + the candidate's
+        # src/minisweagent/, not from this entry script.
+        command = _rewrite_eval_entry_to_abs(command, self.project_root)
         if not command:
             raise ValueError(
                 "SWE-bench mini-SWE-agent evaluation requires candidate['command'] "
@@ -322,6 +349,7 @@ class MiniSweAgentSourceRunner:
             patch_path=patch_path,
             instance=instance,
         )
+        eval_command = _rewrite_eval_entry_to_abs(eval_command, self.project_root)
         evaluator_returncode: int | None = None
         if eval_command:
             try:
@@ -427,6 +455,7 @@ def run_swebench_frontier(
         dry_run=dry_run,
         force=force,
     )
+    # project_root defaults to repo root via the runner's own resolution.
     result = runner.evaluate_candidate(
         candidate=candidate,
         candidate_id=DEFAULT_MINI_SWE_AGENT_NAME,
@@ -519,6 +548,30 @@ def _format_command(
     if isinstance(value, Iterable):
         return [str(item).format(**replacements) for item in value]
     raise TypeError("command must be a string or list of strings")
+
+
+def _rewrite_eval_entry_to_abs(tokens: list[str], project_root: Path) -> list[str]:
+    """Force eval-command to invoke the repo-root copy of the eval entry script.
+
+    Walks the token list and replaces the first occurrence that names the
+    eval-gate entry script via a relative form (``scripts/run_miniswe_swebench_single.py``,
+    bare filename, ``./scripts/...``) or any absolute path ending in that
+    filename with the absolute repo-root path. The in-candidate copy is a
+    read-only reference; even if a proposer rewrites it, grading still runs
+    against the trusted version. No-op on empty input or when no recognized
+    form is present.
+    """
+
+    if not tokens:
+        return tokens
+    abs_target = project_root / "scripts" / EVAL_ENTRY_SCRIPT_FILENAME
+    abs_str = str(abs_target)
+    rewritten = list(tokens)
+    for idx, token in enumerate(rewritten):
+        if token in EVAL_ENTRY_RELATIVE_FORMS or Path(token).name == EVAL_ENTRY_SCRIPT_FILENAME:
+            rewritten[idx] = abs_str
+            return rewritten
+    return rewritten
 
 
 def _extract_patch_from_stdout(stdout: str) -> str:

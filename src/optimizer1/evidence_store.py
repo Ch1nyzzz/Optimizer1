@@ -150,6 +150,40 @@ CREATE TABLE IF NOT EXISTS candidates (
     PRIMARY KEY (iteration, candidate_id)
 );
 
+CREATE TABLE IF NOT EXISTS proposals (
+    proposal_id TEXT PRIMARY KEY,
+    iteration INTEGER NOT NULL,
+    candidate_id TEXT,
+    proposal_name TEXT,
+    scaffold_name TEXT,
+    hypothesis TEXT,
+    changes TEXT,
+    expected_effect_json TEXT,
+    risk_json TEXT,
+    evidence_refs_json TEXT,
+    proposal_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_proposals_iter_candidate
+    ON proposals(iteration, candidate_id);
+
+CREATE TABLE IF NOT EXISTS proposal_outcomes (
+    proposal_id TEXT PRIMARY KEY,
+    iteration INTEGER NOT NULL,
+    candidate_id TEXT,
+    base_iteration INTEGER,
+    base_candidate_id TEXT,
+    passrate_delta REAL,
+    average_score_delta REAL,
+    token_delta INTEGER,
+    breakthrough_count INTEGER NOT NULL,
+    regression_count INTEGER NOT NULL,
+    stable_pass_count INTEGER NOT NULL,
+    persistent_fail_count INTEGER NOT NULL,
+    task_count INTEGER NOT NULL,
+    outcome_summary_json TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS eval_results (
     iteration INTEGER NOT NULL,
     candidate_id TEXT NOT NULL,
@@ -325,6 +359,7 @@ class EvidenceStore:
         self._import_trace_index()
         self._import_trace_jsonl(iteration=iteration)
         self._import_run_artifacts(iteration=iteration)
+        self._rebuild_proposal_outcomes()
         self._rebuild_links()
         self.set_metadata("last_refresh_at", _utc_now())
 
@@ -374,7 +409,27 @@ class EvidenceStore:
                 )
                 proposal = _loads(row["proposal_json"], {})
                 if proposal:
+                    self._upsert_proposal_payload(
+                        dest,
+                        iteration=row["iteration"],
+                        candidate_id=row["candidate_id"],
+                        proposal=proposal,
+                    )
                     self._upsert_modification_payload(dest, row["iteration"], proposal)
+            for row in _select(src, "SELECT * FROM proposals"):
+                proposal = {
+                    "hypothesis": row["hypothesis"],
+                    "expected_effect": _loads(row["expected_effect_json"], None),
+                    "risk": _loads(row["risk_json"], None),
+                    "evidence_refs": _loads(row["evidence_refs_json"], None),
+                }
+                self._upsert_proposal_payload(
+                    dest,
+                    iteration=row["iteration"],
+                    candidate_id=row["candidate_id"],
+                    proposal={key: value for key, value in proposal.items() if value is not None},
+                    proposal_id=row["proposal_id"],
+                )
             for row in _select(src, "SELECT * FROM task_results"):
                 dest.execute(
                     """
@@ -852,6 +907,82 @@ class EvidenceStore:
     def _rebuild_links(self) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM evidence_links WHERE run_id = ?", (self.run_id,))
+            for row in conn.execute("SELECT * FROM proposals").fetchall():
+                proposal_id = str(row["proposal_id"])
+                iteration = int(row["iteration"])
+                self._link(
+                    conn,
+                    source_type="proposer_call",
+                    source_id=_call_id(self.run_id, iteration),
+                    target_type="proposal",
+                    target_id=proposal_id,
+                    relation="proposes",
+                    provenance="iteration",
+                    confidence=1.0,
+                )
+                self._link(
+                    conn,
+                    source_type="proposal",
+                    source_id=proposal_id,
+                    target_type="modification",
+                    target_id=_mod_id(self.run_id, iteration),
+                    relation="implemented_by",
+                    provenance="iteration",
+                    confidence=1.0,
+                )
+                if row["candidate_id"]:
+                    self._link(
+                        conn,
+                        source_type="proposal",
+                        source_id=proposal_id,
+                        target_type="candidate",
+                        target_id=_candidate_id(
+                            self.run_id,
+                            iteration,
+                            str(row["candidate_id"]),
+                        ),
+                        relation="generates_candidate",
+                        provenance="candidate_id",
+                        confidence=1.0,
+                    )
+            for row in conn.execute("SELECT iteration, candidate_id FROM candidates").fetchall():
+                candidate_entity = _candidate_id(
+                    self.run_id,
+                    row["iteration"],
+                    str(row["candidate_id"]),
+                )
+                self._link(
+                    conn,
+                    source_type="modification",
+                    source_id=_mod_id(self.run_id, row["iteration"]),
+                    target_type="candidate",
+                    target_id=candidate_entity,
+                    relation="produces_candidate",
+                    provenance="iteration",
+                    confidence=1.0,
+                )
+                for eval_row in conn.execute(
+                    """
+                    SELECT task_id FROM eval_results
+                    WHERE iteration = ? AND candidate_id = ?
+                    """,
+                    (row["iteration"], row["candidate_id"]),
+                ).fetchall():
+                    self._link(
+                        conn,
+                        source_type="candidate",
+                        source_id=candidate_entity,
+                        target_type="eval_result",
+                        target_id=_eval_id(
+                            self.run_id,
+                            row["iteration"],
+                            str(row["candidate_id"]),
+                            str(eval_row["task_id"]),
+                        ),
+                        relation="has_eval_result",
+                        provenance="candidate_eval",
+                        confidence=1.0,
+                    )
             for row in conn.execute("SELECT iteration, path FROM modified_files").fetchall():
                 self._link(
                     conn,
@@ -945,6 +1076,187 @@ class EvidenceStore:
                     provenance="iteration",
                     confidence=1.0,
                 )
+
+    def _rebuild_proposal_outcomes(self) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM proposal_outcomes")
+            proposals = conn.execute(
+                """
+                SELECT p.proposal_id, p.iteration, p.candidate_id,
+                       c.passrate, c.average_score, c.token_consuming
+                FROM proposals p
+                LEFT JOIN candidates c
+                  ON c.iteration = p.iteration AND c.candidate_id = p.candidate_id
+                WHERE p.candidate_id IS NOT NULL
+                ORDER BY p.iteration ASC, p.candidate_id ASC
+                """
+            ).fetchall()
+            for proposal in proposals:
+                base = self._base_candidate_for_iteration(
+                    conn,
+                    iteration=int(proposal["iteration"]),
+                )
+                counts = {
+                    "breakthrough_count": 0,
+                    "regression_count": 0,
+                    "stable_pass_count": 0,
+                    "persistent_fail_count": 0,
+                    "task_count": 0,
+                }
+                if base is not None:
+                    counts = self._proposal_task_counts(
+                        conn,
+                        left_iteration=int(base["iteration"]),
+                        left_candidate_id=str(base["candidate_id"]),
+                        right_iteration=int(proposal["iteration"]),
+                        right_candidate_id=str(proposal["candidate_id"]),
+                    )
+                passrate_delta = _delta(
+                    proposal["passrate"],
+                    base["passrate"] if base else None,
+                )
+                average_score_delta = _delta(
+                    proposal["average_score"],
+                    base["average_score"] if base else None,
+                )
+                token_delta = _int_delta(
+                    proposal["token_consuming"],
+                    base["token_consuming"] if base else None,
+                )
+                summary = {
+                    "base_iteration": None if base is None else int(base["iteration"]),
+                    "base_candidate_id": None if base is None else str(base["candidate_id"]),
+                    "passrate_delta": passrate_delta,
+                    "average_score_delta": average_score_delta,
+                    "token_delta": token_delta,
+                    **counts,
+                }
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO proposal_outcomes (
+                        proposal_id, iteration, candidate_id, base_iteration,
+                        base_candidate_id, passrate_delta, average_score_delta,
+                        token_delta, breakthrough_count, regression_count,
+                        stable_pass_count, persistent_fail_count, task_count,
+                        outcome_summary_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        proposal["proposal_id"],
+                        proposal["iteration"],
+                        proposal["candidate_id"],
+                        summary["base_iteration"],
+                        summary["base_candidate_id"],
+                        passrate_delta,
+                        average_score_delta,
+                        token_delta,
+                        counts["breakthrough_count"],
+                        counts["regression_count"],
+                        counts["stable_pass_count"],
+                        counts["persistent_fail_count"],
+                        counts["task_count"],
+                        _json(summary),
+                    ),
+                )
+
+    def _base_candidate_for_iteration(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        iteration: int,
+    ) -> sqlite3.Row | None:
+        meta = conn.execute(
+            """
+            SELECT base_iteration, base_candidate_id, patch_base
+            FROM iterations
+            WHERE iteration = ?
+            """,
+            (int(iteration),),
+        ).fetchone()
+        base_iteration = None
+        base_candidate_id = None
+        if meta is not None:
+            base_iteration = meta["base_iteration"]
+            base_candidate_id = meta["base_candidate_id"]
+            if base_iteration is None:
+                base_iteration = meta["patch_base"]
+        if base_iteration is None:
+            candidate_row = conn.execute(
+                """
+                SELECT MAX(iteration) AS iteration
+                FROM candidates
+                WHERE iteration < ?
+                """,
+                (int(iteration),),
+            ).fetchone()
+            base_iteration = candidate_row["iteration"] if candidate_row else None
+        if base_iteration is None:
+            return None
+        if base_candidate_id:
+            row = conn.execute(
+                """
+                SELECT iteration, candidate_id, passrate, average_score, token_consuming
+                FROM candidates
+                WHERE iteration = ? AND candidate_id = ?
+                """,
+                (int(base_iteration), str(base_candidate_id)),
+            ).fetchone()
+            if row is not None:
+                return row
+        return conn.execute(
+            """
+            SELECT iteration, candidate_id, passrate, average_score, token_consuming
+            FROM candidates
+            WHERE iteration = ?
+            ORDER BY passrate DESC, average_score DESC, candidate_id DESC
+            LIMIT 1
+            """,
+            (int(base_iteration),),
+        ).fetchone()
+
+    def _proposal_task_counts(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        left_iteration: int,
+        left_candidate_id: str,
+        right_iteration: int,
+        right_candidate_id: str,
+    ) -> dict[str, int]:
+        rows: dict[str, dict[str, bool | None]] = {}
+        for side, iteration, candidate_id in (
+            ("left", left_iteration, left_candidate_id),
+            ("right", right_iteration, right_candidate_id),
+        ):
+            for row in conn.execute(
+                """
+                SELECT task_id, passed
+                FROM eval_results
+                WHERE iteration = ? AND candidate_id = ?
+                """,
+                (iteration, candidate_id),
+            ).fetchall():
+                entry = rows.setdefault(str(row["task_id"]), {"left": None, "right": None})
+                entry[side] = bool(row["passed"])
+        counts = {
+            "breakthrough_count": 0,
+            "regression_count": 0,
+            "stable_pass_count": 0,
+            "persistent_fail_count": 0,
+            "task_count": len(rows),
+        }
+        for item in rows.values():
+            left = item["left"]
+            right = item["right"]
+            if left is False and right is True:
+                counts["breakthrough_count"] += 1
+            elif left is True and right is False:
+                counts["regression_count"] += 1
+            elif left is True and right is True:
+                counts["stable_pass_count"] += 1
+            elif left is False and right is False:
+                counts["persistent_fail_count"] += 1
+        return counts
 
     def _artifact_for_access(self, conn: sqlite3.Connection, access_path: str) -> sqlite3.Row | None:
         candidates = _path_candidates(access_path)
@@ -1042,6 +1354,53 @@ class EvidenceStore:
             ),
         )
 
+    def _upsert_proposal_payload(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        iteration: int,
+        candidate_id: str | None,
+        proposal: dict[str, Any],
+        proposal_id: str | None = None,
+    ) -> None:
+        cid = None if candidate_id is None else str(candidate_id)
+        proposal_id = proposal_id or _proposal_id(self.run_id, iteration, cid)
+        hypothesis = proposal.get("hypothesis") or proposal.get("description")
+        changes = proposal.get("changes") or proposal.get("implementation")
+        conn.execute(
+            """
+            INSERT INTO proposals (
+                proposal_id, iteration, candidate_id, proposal_name,
+                scaffold_name, hypothesis, changes, expected_effect_json,
+                risk_json, evidence_refs_json, proposal_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(proposal_id) DO UPDATE SET
+                iteration = excluded.iteration,
+                candidate_id = COALESCE(excluded.candidate_id, proposals.candidate_id),
+                proposal_name = COALESCE(excluded.proposal_name, proposals.proposal_name),
+                scaffold_name = COALESCE(excluded.scaffold_name, proposals.scaffold_name),
+                hypothesis = COALESCE(excluded.hypothesis, proposals.hypothesis),
+                changes = COALESCE(excluded.changes, proposals.changes),
+                expected_effect_json = COALESCE(excluded.expected_effect_json, proposals.expected_effect_json),
+                risk_json = COALESCE(excluded.risk_json, proposals.risk_json),
+                evidence_refs_json = COALESCE(excluded.evidence_refs_json, proposals.evidence_refs_json),
+                proposal_json = excluded.proposal_json
+            """,
+            (
+                proposal_id,
+                int(iteration),
+                cid,
+                _optional_str(proposal.get("name") or proposal.get("proposal_name")),
+                _optional_str(proposal.get("scaffold_name")),
+                _optional_str(hypothesis),
+                _optional_str(changes),
+                _json_or_none(proposal.get("expected_effect")),
+                _json_or_none(proposal.get("risk")),
+                _json_or_none(proposal.get("evidence_refs") or proposal.get("evidence")),
+                _json(proposal),
+            ),
+        )
+
 
 def _select(conn: sqlite3.Connection, sql: str) -> list[sqlite3.Row]:
     try:
@@ -1108,6 +1467,31 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _delta(right: Any, left: Any) -> float | None:
+    right_value = _float_or_none(right)
+    left_value = _float_or_none(left)
+    if right_value is None or left_value is None:
+        return None
+    return right_value - left_value
+
+
+def _int_delta(right: Any, left: Any) -> int | None:
+    try:
+        if right is None or left is None:
+            return None
+        return int(right) - int(left)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_str(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
+def _json_or_none(value: Any) -> str | None:
+    return None if value is None else _json(value)
+
+
 def _stable_id(*parts: object) -> str:
     text = "\x1f".join(str(part) for part in parts)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -1119,6 +1503,15 @@ def _mod_id(run_id: str, iteration: int) -> str:
 
 def _call_id(run_id: str, iteration: int) -> str:
     return f"{run_id}:call:{int(iteration):03d}"
+
+
+def _proposal_id(run_id: str, iteration: int, candidate_id: str | None) -> str:
+    suffix = candidate_id or "pending"
+    return f"{run_id}:proposal:{int(iteration):03d}:{suffix}"
+
+
+def _candidate_id(run_id: str, iteration: int, candidate_id: str) -> str:
+    return f"{run_id}:candidate:{int(iteration):03d}:{candidate_id}"
 
 
 def _eval_id(run_id: str, iteration: int, candidate_id: str, task_id: str) -> str:

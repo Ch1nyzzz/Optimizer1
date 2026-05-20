@@ -4,11 +4,10 @@ This mirrors ``swebench_optimizer.py``: the proposer evolves an agent class
 (seeded from Terminus-KIRA, ``baseline_kira.py``) inside a writable snapshot
 of the vendored ``terminal_bench_2`` reference project, and the candidate is
 scored by running Harbor on Terminal-Bench 2.0. Everything that is not the
-scaffold itself — the outer loop, all selection policies, the diagnoser and
-historian subagents, the trace MCP tools — is inherited from
-``LocomoOptimizer`` unchanged, so Optimal1's deltas (pareto base resampling
-+ ``--diagnose`` + trace harness) layer on exactly as they do for SWE-bench
-mini.
+scaffold itself — the outer loop, all selection policies, the per-benchmark
+proposer skill, the trace MCP tools — is inherited from ``LocomoOptimizer``
+unchanged, so Optimal1's deltas (pareto base resampling + trace harness)
+layer on exactly as they do for SWE-bench mini.
 """
 
 from __future__ import annotations

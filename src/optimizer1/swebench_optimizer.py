@@ -2,11 +2,112 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# When mirroring the repo-root eval-gate script into a candidate snapshot we
+# prepend this banner so the proposer sees a clear note that edits are inert.
+EVAL_SCRIPT_BANNER = (
+    "# READ-ONLY REFERENCE — DO NOT EDIT.\n"
+    "# This file is the SWE-bench eval gate. The real grading subprocess runs\n"
+    "# the trusted copy at <repo>/scripts/run_miniswe_swebench_single.py via\n"
+    "# an absolute path. Edits to this in-candidate copy have no effect and\n"
+    "# will be flagged as a reward_hack_attempt in candidate_score_table.\n"
+    "# To improve agent behaviour, edit files under src/minisweagent/* and\n"
+    "# express your contract in pending_eval.json — do not touch this script.\n"
+    "\n"
+)
+
+
+def _eval_script_repo_path(project_root: Path) -> Path:
+    return project_root / "scripts" / "run_miniswe_swebench_single.py"
+
+
+def _eval_script_sha256(text: str) -> str:
+    """Hash the eval script after removing any banner we may have injected.
+
+    Strips a leading occurrence of ``EVAL_SCRIPT_BANNER`` so the hash compares
+    apples to apples regardless of whether the file we are looking at has
+    been mirrored from the trusted source (banner injected) or is the
+    pristine trusted source itself.
+    """
+
+    payload = text
+    if payload.startswith(EVAL_SCRIPT_BANNER):
+        payload = payload[len(EVAL_SCRIPT_BANNER):]
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _mirror_eval_script_into_candidate(
+    *,
+    candidate_mini_root: Path,
+    project_root: Path,
+) -> None:
+    """Force-mirror the trusted eval script into a candidate snapshot.
+
+    The trusted file lives at ``<repo>/scripts/run_miniswe_swebench_single.py``.
+    The on-disk copy under the candidate
+    (``<candidate>/scripts/run_miniswe_swebench_single.py``) is a read-only
+    reference; the grading subprocess never uses it because eval-command
+    invocation is rewritten to the absolute repo-root path. We always create
+    ``scripts/`` (even if the vendored mini-swe-agent has no such directory)
+    so the trusted copy is in place before the proposer's session starts —
+    if the proposer later overwrites it, sha256 detection will flag it.
+
+    No-op when ``candidate_mini_root`` itself does not exist (the upstream
+    mini-swe-agent copy wasn't materialized for this candidate).
+    """
+
+    if not candidate_mini_root.exists():
+        return
+    trusted = _eval_script_repo_path(project_root)
+    if not trusted.is_file():
+        # Defensive — repo missing the eval script is a setup error, not a
+        # snapshot-build error. Surface it explicitly.
+        raise FileNotFoundError(
+            "Trusted eval gate script is missing at "
+            f"{trusted}. Cannot mirror into candidate snapshot."
+        )
+    target_dir = candidate_mini_root / "scripts"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    trusted_text = trusted.read_text(encoding="utf-8")
+    target = target_dir / "run_miniswe_swebench_single.py"
+    target.write_text(EVAL_SCRIPT_BANNER + trusted_text, encoding="utf-8")
+
+
+def detect_eval_script_tampering(
+    candidate_mini_root: Path,
+    project_root: Path,
+) -> bool:
+    """Return True iff the candidate's eval-script copy differs from trusted.
+
+    Compares the candidate copy (banner-stripped) against the repo-root truth
+    by sha256. Missing candidate copy is treated as tampering — the snapshot
+    builder always mirrors a banner-prefixed copy, so absence means a proposer
+    deleted or moved it.
+    """
+
+    trusted = _eval_script_repo_path(project_root)
+    candidate_copy = candidate_mini_root / "scripts" / "run_miniswe_swebench_single.py"
+    if not trusted.is_file():
+        return False
+    if not candidate_copy.is_file():
+        return True
+    try:
+        trusted_hash = _eval_script_sha256(trusted.read_text(encoding="utf-8"))
+        candidate_hash = _eval_script_sha256(
+            candidate_copy.read_text(encoding="utf-8", errors="replace")
+        )
+    except OSError:
+        return True
+    return trusted_hash != candidate_hash
 
 from optimizer1.benchmark_workspaces import BenchmarkWorkspaceSpec, SWEBENCH_WORKSPACE_SPEC
 from optimizer1.optimizer import LocomoOptimizer, OptimizerConfig
@@ -92,6 +193,7 @@ class SwebenchOptimizer(LocomoOptimizer):
             max_eval_workers=self.config.max_eval_workers,
             dry_run=self.config.dry_run,
             force=self.config.force,
+            project_root=self.project_root,
         )
 
         rows: list[dict[str, Any]] = []
@@ -204,8 +306,8 @@ class SwebenchOptimizer(LocomoOptimizer):
             spec["source_project_path"] = str(extra["source_project_path"])
         if "source_project_path" not in spec:
             spec["source_project_path"] = str(self.config.mini_swe_agent_source_path)
-        spec.setdefault("command", self.config.mini_swe_agent_command)
-        spec.setdefault("eval_command", self.config.mini_swe_agent_eval_command)
+        spec["command"] = self.config.mini_swe_agent_command
+        spec["eval_command"] = self.config.mini_swe_agent_eval_command
         return spec
 
     def _evaluate_proposed(
@@ -221,6 +323,7 @@ class SwebenchOptimizer(LocomoOptimizer):
             max_eval_workers=self.config.max_eval_workers,
             dry_run=self.config.dry_run,
             force=self.config.force,
+            project_root=self.project_root,
         )
         results: list[CandidateResult] = []
         for raw in proposed:
@@ -235,8 +338,8 @@ class SwebenchOptimizer(LocomoOptimizer):
             candidate.setdefault("agent_name", agent_name)
             candidate.setdefault("source_family", DEFAULT_MINI_SWE_AGENT_NAME)
             self._normalize_candidate_source_project_path(candidate)
-            candidate.setdefault("command", self.config.mini_swe_agent_command)
-            candidate.setdefault("eval_command", self.config.mini_swe_agent_eval_command)
+            candidate["command"] = self.config.mini_swe_agent_command
+            candidate["eval_command"] = self.config.mini_swe_agent_eval_command
 
             violations = self._candidate_code_policy_violations(candidate)
             if violations:
@@ -269,9 +372,85 @@ class SwebenchOptimizer(LocomoOptimizer):
                     }
                 )
                 continue
+            self._tag_reward_hack_attempt(
+                iteration=iteration,
+                candidate=candidate,
+                candidate_id=candidate_id,
+                result=result,
+            )
             results.append(result)
             self._append_summary(iteration=iteration, candidate=result, proposal=candidate)
         return results
+
+    def _tag_reward_hack_attempt(
+        self,
+        *,
+        iteration: int,
+        candidate: dict[str, Any],
+        candidate_id: str,
+        result: CandidateResult,
+    ) -> None:
+        """Audit (don't punish) candidates that tampered with the eval script,
+        and immediately reset the in-snapshot copy to the trusted version so
+        the next iteration's parent-snapshot copy starts clean.
+
+        Sets ``result.config["reward_hack_attempt"] = True`` and logs an
+        evolution event. ``passrate`` stays untouched — the grading
+        subprocess always invokes the trusted repo-root copy via an
+        absolute path, so tampered candidate copies could not have biased
+        the score in the first place. The flag is a signal for downstream
+        analysis that the proposer attempted to game the gate.
+
+        After flagging, the tampered file is overwritten with the trusted
+        banner-prefixed version. This breaks the implicit-contagion path
+        where a later curaii-style iteration copies the parent snapshot's
+        scripts/ directory and inherits a hacked eval script.
+        """
+
+        mini_root = self._candidate_mini_source_path(candidate)
+        if mini_root is None:
+            return
+        tampered = detect_eval_script_tampering(mini_root, self.project_root)
+        # result.config is a dict (CandidateResult is frozen, but dicts mutate).
+        result.config["reward_hack_attempt"] = bool(tampered)
+        if not tampered:
+            return
+        eval_script = mini_root / "scripts" / "run_miniswe_swebench_single.py"
+        logger.warning(
+            "iter %d candidate %s tampered with eval script at %s; resetting",
+            iteration,
+            candidate_id,
+            eval_script,
+        )
+        # Overwrite back to the trusted copy. Best-effort: a write failure
+        # here is logged but does not propagate (eval already completed and
+        # passrate is unaffected; worst case the next iteration's copy
+        # still sees the tampered version and gets re-flagged + reset).
+        try:
+            _mirror_eval_script_into_candidate(
+                candidate_mini_root=mini_root,
+                project_root=self.project_root,
+            )
+        except OSError as exc:
+            logger.warning(
+                "failed to reset tampered eval script for %s: %s",
+                candidate_id,
+                exc,
+            )
+        self._append_event(
+            {
+                "iteration": iteration,
+                "event": "candidate_reward_hack_attempt",
+                "candidate_id": candidate_id,
+                "candidate_mini_root": str(mini_root),
+                "note": (
+                    "candidate edited the in-snapshot copy of the eval gate; "
+                    "grading uses the trusted repo-root path, so passrate is "
+                    "unaffected. flagged for audit and the copy has been "
+                    "overwritten back to the trusted version."
+                ),
+            }
+        )
 
     def _normalize_candidate_source_project_path(self, candidate: dict[str, Any]) -> None:
         """Keep proposer-edited mini-SWE-agent snapshots ahead of the default source."""
@@ -292,16 +471,31 @@ class SwebenchOptimizer(LocomoOptimizer):
         source = self.config.mini_swe_agent_source_path
         if not source.exists() or not source.is_dir():
             return
-        self._copy_tree_if_exists(
-            source,
-            dest_dir / "upstream_source" / "mini-swe-agent",
+        candidate_mini_root = dest_dir / "upstream_source" / "mini-swe-agent"
+        self._copy_tree_if_exists(source, candidate_mini_root)
+        # Lock down the eval-gate copy: mirror the trusted repo-root version
+        # with a banner. The grading subprocess invokes the absolute path so
+        # any later proposer edit to this file is inert; we still keep a copy
+        # visible so the proposer can study how passrate is computed.
+        _mirror_eval_script_into_candidate(
+            candidate_mini_root=candidate_mini_root,
+            project_root=self.project_root,
         )
 
     def _candidate_policy_scan_paths(self, candidate: dict[str, Any]) -> list[Path]:
         out = super()._candidate_policy_scan_paths(candidate)
         source_path = self._candidate_mini_source_path(candidate)
         if source_path is not None and source_path.exists():
-            out.extend(sorted(source_path.rglob("*.py")))
+            # The mirrored eval-gate script is the trusted repo-root copy
+            # injected by _mirror_eval_script_into_candidate so the proposer
+            # can read it. It legitimately references the SWE-bench scorer
+            # (it *is* the scorer entry). Skip it during code-policy scan;
+            # eval-gate integrity is handled separately via sha256 detection.
+            eval_gate_copy = (source_path / "scripts" / "run_miniswe_swebench_single.py").resolve()
+            for path in sorted(source_path.rglob("*.py")):
+                if path.resolve() == eval_gate_copy:
+                    continue
+                out.append(path)
         return sorted(set(out))
 
     def _candidate_code_policy_violations(self, candidate: Any) -> list[dict[str, str]]:
@@ -383,6 +577,12 @@ class SwebenchOptimizer(LocomoOptimizer):
                     parent_upstream,
                     upstream,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                )
+                # Re-lock the eval gate after copying from the parent, in case
+                # an earlier iteration's snapshot contains a tampered copy.
+                _mirror_eval_script_into_candidate(
+                    candidate_mini_root=upstream,
+                    project_root=self.project_root,
                 )
         readme = candidate_dir / "SNAPSHOT.md"
         readme.write_text(

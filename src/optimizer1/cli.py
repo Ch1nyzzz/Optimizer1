@@ -268,12 +268,13 @@ def main() -> int:
     optimize.add_argument("--eval-timeout-s", type=int, default=300)
     optimize.add_argument(
         "--proposer-agent",
-        choices=("claude",),
+        choices=("claude", "codex"),
         default="claude",
         help=(
-            "Code agent used to generate candidates. Only 'claude' "
-            "(Claude Code, routable via ANTHROPIC_BASE_URL to "
-            "DeepSeek/Kimi/etc.) is supported."
+            "Code agent used to generate candidates. 'claude' runs "
+            "Claude Code (routable via ANTHROPIC_BASE_URL to "
+            "DeepSeek/Kimi/etc.); 'codex' runs the Codex CLI against "
+            "the user's ~/.codex ChatGPT login."
         ),
     )
     optimize.add_argument(
@@ -324,6 +325,32 @@ def main() -> int:
             "claude CLI uses its own credentials. --claude-base-url / "
             "--claude-auth-token are ignored, and --claude-model defaults "
             "to empty (no --model flag passed) unless explicitly provided."
+        ),
+    )
+    optimize.add_argument(
+        "--codex-model",
+        default="gpt-5.5",
+        help=(
+            "Model name for Codex proposer (passed as `codex exec -m`). "
+            "Default 'gpt-5.5'. Only used when --proposer-agent codex."
+        ),
+    )
+    optimize.add_argument(
+        "--codex-reasoning-effort",
+        choices=("", "minimal", "low", "medium", "high", "xhigh"),
+        default="high",
+        help=(
+            "Codex --c model_reasoning_effort. Default 'high'. Empty "
+            "leaves the choice to the Codex CLI's own config.toml."
+        ),
+    )
+    optimize.add_argument(
+        "--codex-home",
+        default="",
+        help=(
+            "Override $CODEX_HOME for the Codex proposer. Empty (default) "
+            "uses ~/.codex. The directory must contain auth.json with a "
+            "valid ChatGPT login (run `codex login` once on the host)."
         ),
     )
     optimize.add_argument("--propose-timeout-s", type=int, default=2400)
@@ -565,31 +592,6 @@ def main() -> int:
             "MCP tools remain registered on the proposer container, but "
             "the prompt no longer points at the on-disk paths. Use as a "
             "control arm for trace-harness exposure ablations."
-        ),
-    )
-    optimize.add_argument(
-        "--diagnose",
-        action="store_true",
-        help=(
-            "Run a diagnoser subagent in the proposer container before "
-            "each proposer step. The diagnoser explores traces and the "
-            "source snapshot and writes a structured failure-mode report "
-            "(diagnoser_report.md); the proposer reads it as hypothesis "
-            "input. Reports are cached per (base_iter, reference_iters) "
-            "within the run so identical lineage states do not re-diagnose."
-        ),
-    )
-    optimize.add_argument(
-        "--no-historian",
-        action="store_true",
-        help=(
-            "Disable the stagnation-forensics historian subagent (otherwise "
-            "offered to the pareto / curai / curaii policies once a stagnation "
-            "streak begins). With this flag, a `--selection-policy pareto` run "
-            "differs from a `--selection-policy default` run only in the patch "
-            "base, making it a clean rebase-on/off ablation. No effect on the "
-            "default / progressive / bandit policies, which never run the "
-            "historian. Independent of `--diagnose`."
         ),
     )
     optimize.add_argument(
@@ -950,6 +952,9 @@ def main() -> int:
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
                     claude_native_auth=args.claude_native_auth,
+                    codex_model=args.codex_model,
+                    codex_reasoning_effort=args.codex_reasoning_effort,
+                    codex_home=args.codex_home,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -983,8 +988,6 @@ def main() -> int:
                     test_frontier_candidate_limit=args.test_frontier_candidate_limit,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                    diagnose=args.diagnose,
-                    disable_historian=args.no_historian,
                     summaries_in_workspace=_summaries_in_workspace(args),
                     organized=args.organized,
                     organized_include_summaries=args.organized_include_summaries,
@@ -1016,6 +1019,9 @@ def main() -> int:
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
                     claude_native_auth=args.claude_native_auth,
+                    codex_model=args.codex_model,
+                    codex_reasoning_effort=args.codex_reasoning_effort,
+                    codex_home=args.codex_home,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -1048,8 +1054,6 @@ def main() -> int:
                     test_frontier_candidate_limit=args.test_frontier_candidate_limit,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                    diagnose=args.diagnose,
-                    disable_historian=args.no_historian,
                     summaries_in_workspace=_summaries_in_workspace(args),
                     organized=args.organized,
                     organized_include_summaries=args.organized_include_summaries,
@@ -1092,6 +1096,9 @@ def main() -> int:
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
                     claude_native_auth=args.claude_native_auth,
+                    codex_model=args.codex_model,
+                    codex_reasoning_effort=args.codex_reasoning_effort,
+                    codex_home=args.codex_home,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -1124,8 +1131,6 @@ def main() -> int:
                     test_frontier_candidate_limit=args.test_frontier_candidate_limit,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                    diagnose=args.diagnose,
-                    disable_historian=args.no_historian,
                     summaries_in_workspace=_summaries_in_workspace(args),
                     organized=args.organized,
                     organized_include_summaries=args.organized_include_summaries,
@@ -1165,6 +1170,9 @@ def main() -> int:
                     claude_base_url=args.claude_base_url,
                     claude_auth_token=args.claude_auth_token,
                     claude_native_auth=args.claude_native_auth,
+                    codex_model=args.codex_model,
+                    codex_reasoning_effort=args.codex_reasoning_effort,
+                    codex_home=args.codex_home,
                     propose_timeout_s=args.propose_timeout_s,
                     dry_run=args.dry_run,
                     max_context_chars=args.max_context_chars,
@@ -1194,8 +1202,6 @@ def main() -> int:
                     force=args.force,
                     trace_baseline_path=args.trace_baseline,
                     proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                    diagnose=args.diagnose,
-                    disable_historian=args.no_historian,
                     summaries_in_workspace=_summaries_in_workspace(args),
                     organized=args.organized,
                     organized_include_summaries=args.organized_include_summaries,
@@ -1228,6 +1234,9 @@ def main() -> int:
                 claude_base_url=args.claude_base_url,
                 claude_auth_token=args.claude_auth_token,
                 claude_native_auth=args.claude_native_auth,
+                codex_model=args.codex_model,
+                codex_reasoning_effort=args.codex_reasoning_effort,
+                codex_home=args.codex_home,
                 propose_timeout_s=args.propose_timeout_s,
                 dry_run=args.dry_run,
                 max_context_chars=args.max_context_chars,
@@ -1261,8 +1270,6 @@ def main() -> int:
                 test_frontier_candidate_limit=args.test_frontier_candidate_limit,
                 trace_baseline_path=args.trace_baseline,
                 proposer_show_trace_harness_section=not args.proposer_no_trace_harness_section,
-                diagnose=args.diagnose,
-                disable_historian=args.no_historian,
                 summaries_in_workspace=_summaries_in_workspace(args),
                 organized=args.organized,
                 organized_include_summaries=args.organized_include_summaries,

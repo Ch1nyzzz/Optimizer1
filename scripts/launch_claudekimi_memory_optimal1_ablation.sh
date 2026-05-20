@@ -135,7 +135,7 @@ start_one() {
   fi
 
   if [ "$arm" = "optimal1" ]; then
-    arm_args=(--diagnose)
+    arm_args=()
   else
     arm_args=()
   fi
