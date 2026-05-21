@@ -13,7 +13,13 @@ htmlcov/
 /.ralph/
 /runs/
 /logs/
-/data/
+/data/*
+# Keep the static Terminal-Bench task manifest tracked — the test-split
+# resolver (terminus.load_terminus_instances) needs it; all other data/
+# content stays ignored.
+!/data/terminus/
+/data/terminus/*
+!/data/terminus/tasks.json
 /results/
 
 *.zip
