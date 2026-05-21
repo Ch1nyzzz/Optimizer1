@@ -191,7 +191,6 @@ start_one() {
     arm_args=(
       "${common_arm_args[@]}"
       --selection-policy pareto
-      --diagnose
     )
   fi
 

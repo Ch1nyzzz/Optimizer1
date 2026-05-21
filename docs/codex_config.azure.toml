@@ -1,0 +1,29 @@
+# Codex CLI config for authenticating the Optimizer1 proposer against Azure
+# OpenAI. This is a TEMPLATE — copy it into place and edit the placeholders:
+#
+#     mkdir -p ~/.codex
+#     cp docs/codex_config.azure.toml ~/.codex/config.toml
+#     $EDITOR ~/.codex/config.toml        # set base_url + model
+#
+# Notes:
+#   * Azure auth is an API key, not an interactive login. Set
+#     AZURE_OPENAI_API_KEY in your .env; `env_key` below points the Codex CLI
+#     at that environment variable. You cannot put the key string here directly.
+#   * Entra ID / Azure AD SSO is NOT supported by the Codex CLI.
+#   * To keep this separate from a personal ChatGPT-login config, copy it to a
+#     dedicated directory instead and pass CODEX_HOME=<that dir> to the launch
+#     script.
+
+# `model` must be your Azure *deployment* name. The launch script overrides it
+# via `--codex-model $CODEX_MODEL`, so keep CODEX_MODEL in sync with this value.
+model = "gpt-5.1-codex"
+model_provider = "azure"
+model_reasoning_effort = "high"
+
+[model_providers.azure]
+name = "Azure OpenAI"
+# Replace YOUR_RESOURCE_NAME with your Azure OpenAI resource name. The trailing
+# `/openai/v1` is required (v1 Responses API — no api-version query param).
+base_url = "https://YOUR_RESOURCE_NAME.openai.azure.com/openai/v1"
+env_key = "AZURE_OPENAI_API_KEY"
+wire_api = "responses"

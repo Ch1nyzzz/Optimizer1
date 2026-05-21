@@ -12,21 +12,20 @@ Mapping into the unified Trace summary:
   - prediction = patch_path                (or "<no patch produced>")
   - passed     = task['passed']
   - score      = task['score']            (0.0 / 1.0 in practice)
-  - duration_s, returncode, evaluator_returncode are kept on the
-    agent span's metadata so renderers can surface them on demand.
+  - duration_s, returncode, evaluator_returncode, and task_dir are kept
+    in the summary so trace-level tools can surface them on demand.
 
 The full multi-step agent trace (tool calls, file reads, patch
 generation steps) lives in `metadata.task_dir`. M6 keeps the adapter
-intentionally shallow — one `agent` span per task — so renderer
-output is consistent with longmemeval/locomo. Parsing the task_dir
-log into nested tool spans is a follow-up.
+trace-only for now rather than emitting a dummy one-step span. Parsing
+the task_dir log into real nested tool spans is a follow-up.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..schema import Span, Trace
+from ..schema import Trace
 
 
 def _summary(task: dict[str, Any]) -> dict[str, Any]:
@@ -55,6 +54,7 @@ def _summary(task: dict[str, Any]) -> dict[str, Any]:
         "repo": repo,
         "base_commit": base_commit,
         "patch_path": patch_path,
+        "task_dir": metadata.get("task_dir"),
         "duration_s": metadata.get("duration_s"),
         "agent_returncode": metadata.get("returncode"),
         "evaluator_returncode": metadata.get("evaluator_returncode"),
@@ -72,24 +72,6 @@ class SwebenchAdapter:
         task: dict[str, Any],
     ) -> Trace:
         task_id = str(task.get("task_id") or "")
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        agent_span = Span(
-            id="s1",
-            kind="agent",
-            input={"issue": task.get("question") or ""},
-            output={
-                "patch_path": metadata.get("patch_path") or "",
-                "passed": bool(task.get("passed")),
-            },
-            metadata={
-                "repo": metadata.get("repo"),
-                "base_commit": metadata.get("base_commit"),
-                "task_dir": metadata.get("task_dir"),
-                "agent_returncode": metadata.get("returncode"),
-                "evaluator_returncode": metadata.get("evaluator_returncode"),
-                "duration_s": metadata.get("duration_s"),
-            },
-        )
         return Trace(
             trace_id=f"iter{iteration:03d}_{candidate_id}_{task_id}",
             iteration=iteration,
@@ -98,5 +80,5 @@ class SwebenchAdapter:
             benchmark=self.name,
             summary=_summary(task),
             diff=None,
-            spans=[agent_span],
+            spans=[],
         )

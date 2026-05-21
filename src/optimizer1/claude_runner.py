@@ -215,41 +215,67 @@ def run_code_agent_prompt(
     sandbox: ProposerSandboxConfig | None = None,
     claude_base_url: str | None = None,
     claude_auth_token: str | None = None,
-    claude_agent_name: str | None = None,
+    claude_append_system_prompt: str | None = None,
     claude_native_auth: bool = False,
+    codex_model: str = "",
+    codex_reasoning_effort: str = "",
+    codex_home: str | None = None,
+    codex_mcp_servers: dict[str, dict[str, Any]] | None = None,
 ) -> ClaudeResult:
-    """Run the Claude Code proposer.
+    """Dispatch one proposer invocation.
 
-    Only ``agent="claude"`` is supported. ``claude_agent_name`` is
-    forwarded to ``claude --agent <name>`` so the main session runs as
-    the named ``.claude/agents/<name>.md`` subagent (its frontmatter
-    supplies the system prompt and tool allowlist).
+    ``agent="claude"`` runs Claude Code via :func:`run_claude_prompt`.
+    The ``claude_*`` keyword arguments are forwarded; ``codex_*`` are
+    ignored.
 
-    ``claude_native_auth=True`` selects the Claude Code subscription
-    OAuth login path: ``ANTHROPIC_BASE_URL`` / ``ANTHROPIC_AUTH_TOKEN``
-    / ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_MODEL`` are stripped from the
-    forwarded environment and never re-set, so the underlying ``claude``
-    CLI uses ``~/.claude/.credentials.json`` and its own default model.
+    ``agent="codex"`` runs the Codex CLI via
+    :func:`optimizer1.codex_runner.run_codex_prompt`. The Codex path
+    uses ``codex_model`` / ``codex_reasoning_effort`` / ``codex_home``
+    and registers per-invocation MCP servers from
+    ``codex_mcp_servers``. Claude-only kwargs (base_url, auth_token,
+    append_system_prompt, native_auth) are ignored because Codex
+    authenticates via ``$CODEX_HOME/auth.json``, uses its own MCP
+    override protocol, and loads its proposer contract from
+    ``<workspace>/AGENTS.md`` rather than an appended system prompt.
     """
 
     normalized = agent.strip().lower()
-    if normalized != "claude":
-        raise ValueError(
-            f"unsupported proposer agent: {agent!r}; only 'claude' is supported"
+    if normalized == "claude":
+        return run_claude_prompt(
+            prompt,
+            cwd=cwd,
+            log_dir=log_dir,
+            name=name,
+            model=model,
+            effort=effort,
+            timeout_s=timeout_s,
+            sandbox=sandbox,
+            base_url=claude_base_url,
+            auth_token=claude_auth_token,
+            append_system_prompt=claude_append_system_prompt,
+            native_auth=claude_native_auth,
         )
-    return run_claude_prompt(
-        prompt,
-        cwd=cwd,
-        log_dir=log_dir,
-        name=name,
-        model=model,
-        effort=effort,
-        timeout_s=timeout_s,
-        sandbox=sandbox,
-        base_url=claude_base_url,
-        auth_token=claude_auth_token,
-        agent_name=claude_agent_name,
-        native_auth=claude_native_auth,
+    if normalized == "codex":
+        from optimizer1.codex_runner import (
+            DEFAULT_CODEX_MODEL,
+            DEFAULT_CODEX_REASONING_EFFORT,
+            run_codex_prompt,
+        )
+
+        return run_codex_prompt(
+            prompt,
+            cwd=cwd,
+            log_dir=log_dir,
+            name=name,
+            model=codex_model or DEFAULT_CODEX_MODEL,
+            reasoning_effort=codex_reasoning_effort or DEFAULT_CODEX_REASONING_EFFORT,
+            timeout_s=timeout_s,
+            sandbox=sandbox,
+            codex_home=codex_home,
+            mcp_servers=codex_mcp_servers,
+        )
+    raise ValueError(
+        f"unsupported proposer agent: {agent!r}; expected 'claude' or 'codex'"
     )
 
 
@@ -265,7 +291,7 @@ def run_claude_prompt(
     sandbox: ProposerSandboxConfig | None = None,
     base_url: str | None = None,
     auth_token: str | None = None,
-    agent_name: str | None = None,
+    append_system_prompt: str | None = None,
     native_auth: bool = False,
 ) -> ClaudeResult:
     """Run ``claude -p`` non-interactively and persist logs.
@@ -274,11 +300,10 @@ def run_claude_prompt(
     with shapes ``{type:"system",...}`` / ``{type:"assistant", message:{...}}``
     / ``{type:"user", message:{tool_result}}`` / ``{type:"result",...}``.
 
-    When ``agent_name`` is given, ``--agent <name>`` is appended so
-    the main session runs as the named ``.claude/agents/<name>.md``
-    subagent. Its frontmatter supplies the system prompt and the
-    tool allowlist; the role / identity text never enters the user
-    message.
+    When ``append_system_prompt`` is given, ``--append-system-prompt
+    <text>`` is appended so the proposer contract (the benchmark's
+    self-contained skill) is delivered through the system prompt
+    channel instead of the user message.
 
     When ``native_auth=True``, the Claude Code subscription OAuth path
     is used. Any ``ANTHROPIC_BASE_URL`` / ``ANTHROPIC_AUTH_TOKEN`` /
@@ -293,7 +318,7 @@ def run_claude_prompt(
     command = _claude_command(
         model=model,
         effort=effort,
-        agent_name=agent_name,
+        append_system_prompt=append_system_prompt,
         mcp_config=_claude_mcp_config_path(cwd, sandbox=sandbox),
     )
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -404,7 +429,7 @@ def _claude_command(
     *,
     model: str,
     effort: str = "",
-    agent_name: str | None = None,
+    append_system_prompt: str | None = None,
     mcp_config: Path | None = None,
 ) -> tuple[str, ...]:
     parts: list[str] = [
@@ -422,8 +447,8 @@ def _claude_command(
         parts.extend(["--model", model])
     if effort:
         parts.extend(["--effort", effort])
-    if agent_name:
-        parts.extend(["--agent", agent_name])
+    if append_system_prompt:
+        parts.extend(["--append-system-prompt", append_system_prompt])
     return tuple(parts)
 
 
@@ -654,31 +679,27 @@ def _is_runstore_tool_name(name: str) -> bool:
     return (
         name.startswith("mcp__runstore-tools__runstore_")
         or name.startswith("runstore_")
-        or name.startswith("mcp__evidence-tools__evidence_")
-        or name.startswith("evidence_")
     )
 
 
 def _is_runstore_trace_tool_name(name: str) -> bool:
     return (
-        name.startswith("mcp__runstore-tools__runstore_trace_")
-        or name.startswith("runstore_trace_")
-        or name.startswith("mcp__evidence-tools__evidence_fact_state")
-        or name.startswith("mcp__evidence-tools__evidence_fact_candidate_outcome")
-        or name.startswith("mcp__evidence-tools__evidence_fact_compare_iterations")
-        or name.startswith("mcp__evidence-tools__evidence_fact_task_history")
-        or name.startswith("mcp__evidence-tools__evidence_fact_trace")
-        or name.startswith("mcp__evidence-tools__evidence_link_")
+        name.startswith("mcp__runstore-tools__runstore_fact_state")
+        or name.startswith("mcp__runstore-tools__runstore_fact_candidate_outcome")
+        or name.startswith("mcp__runstore-tools__runstore_fact_compare_iterations")
+        or name.startswith("mcp__runstore-tools__runstore_fact_task_history")
+        or name.startswith("mcp__runstore-tools__runstore_fact_trace")
+        or name.startswith("mcp__runstore-tools__runstore_link_")
+        or name.startswith("mcp__runstore-tools__runstore_artifact_")
     )
 
 
 def _is_runstore_mod_tool_name(name: str) -> bool:
     return (
-        name.startswith("mcp__runstore-tools__runstore_mod_")
-        or name.startswith("runstore_mod_")
-        or name.startswith("mcp__evidence-tools__evidence_fact_modification")
-        or name.startswith("mcp__evidence-tools__evidence_fact_proposer_call")
-        or name.startswith("mcp__evidence-tools__evidence_fact_file_history")
+        name.startswith("mcp__runstore-tools__runstore_fact_modification")
+        or name.startswith("mcp__runstore-tools__runstore_fact_proposer_call")
+        or name.startswith("mcp__runstore-tools__runstore_fact_file_history")
+        or name.startswith("mcp__runstore-tools__runstore_fact_proposal")
     )
 
 

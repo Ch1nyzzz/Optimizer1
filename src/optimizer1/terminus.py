@@ -102,6 +102,25 @@ TERMINUS_HARD_TASKS: tuple[str, ...] = (
 DEFAULT_TERMINUS_TASKS_PATH = Path("data/terminus/tasks.json")
 
 
+def preflight_terminus_env(env: str) -> None:
+    """Fail fast if the chosen Harbor rollout environment lacks credentials.
+
+    Harbor's own per-environment preflight (e.g. ``DaytonaEnvironment.preflight``)
+    raises only once the first trial actually starts — many minutes into a run,
+    after the seed frontier and proposer docker have already spun up. Checking
+    here surfaces a missing key before any of that work begins.
+    """
+
+    if (env or "").strip().lower() == "daytona" and not os.environ.get(
+        "DAYTONA_API_KEY"
+    ):
+        raise RuntimeError(
+            "Harbor environment 'daytona' requires the DAYTONA_API_KEY "
+            "environment variable. Add it to .env (the launch scripts source "
+            ".env) or export it in the shell, then retry."
+        )
+
+
 @dataclass(frozen=True)
 class TerminusInstance:
     """One Terminal-Bench 2.0 task in the split being optimized."""
@@ -240,6 +259,7 @@ class TerminusHarborRunner:
         trials: int = DEFAULT_TERMINUS_TRIALS,
         concurrency: int = DEFAULT_TERMINUS_CONCURRENCY,
         agent_timeout_multiplier: float = DEFAULT_TERMINUS_AGENT_TIMEOUT_MULTIPLIER,
+        env_kwargs: Sequence[str] = (),
         seed_agent_import_path: str = DEFAULT_TERMINUS_SEED_AGENT_IMPORT_PATH,
         jobs_dir: Path | None = None,
         timeout_s: int = DEFAULT_TERMINUS_JOB_TIMEOUT_S,
@@ -262,6 +282,9 @@ class TerminusHarborRunner:
         self.trials = max(1, int(trials))
         self.concurrency = max(1, int(concurrency))
         self.agent_timeout_multiplier = float(agent_timeout_multiplier or 0.0)
+        # Harbor environment kwargs, each a "key=value" string forwarded as a
+        # `--ek key=value` flag (e.g. daytona's auto_stop_interval_mins).
+        self.env_kwargs = tuple(env_kwargs or ())
         self.seed_agent_import_path = seed_agent_import_path
         self.jobs_dir = (
             Path(jobs_dir).expanduser().resolve()
@@ -499,6 +522,8 @@ class TerminusHarborRunner:
             cmd += ["--ak", f"reasoning_effort={self.reasoning_effort}"]
         if self.agent_timeout_multiplier and self.agent_timeout_multiplier > 0:
             cmd += ["--agent-timeout-multiplier", str(self.agent_timeout_multiplier)]
+        for env_kwarg in self.env_kwargs:
+            cmd += ["--ek", env_kwarg]
         for instance in self.instances:
             cmd += ["-i", instance.task_id]
         return cmd
@@ -654,6 +679,7 @@ def run_terminus_frontier(
     trials: int = DEFAULT_TERMINUS_TRIALS,
     concurrency: int = DEFAULT_TERMINUS_CONCURRENCY,
     agent_timeout_multiplier: float = DEFAULT_TERMINUS_AGENT_TIMEOUT_MULTIPLIER,
+    env_kwargs: Sequence[str] = (),
     seed_agent_import_path: str = DEFAULT_TERMINUS_SEED_AGENT_IMPORT_PATH,
     include_secondary_baseline: bool = True,
     secondary_baseline_name: str = DEFAULT_TERMINUS_SECONDARY_BASELINE_NAME,
@@ -670,6 +696,10 @@ def run_terminus_frontier(
     optional secondary baseline is vanilla Terminus-2
     (``agents.baseline_terminus2``), mirroring the meta-harness Phase-0 setup.
     """
+
+    # Surface a missing remote-sandbox credential before the (long) seed run.
+    if not dry_run:
+        preflight_terminus_env(env)
 
     instances = load_terminus_instances(
         tasks_path, split=split, limit=limit, test_tasks=test_tasks
@@ -689,6 +719,7 @@ def run_terminus_frontier(
         trials=trials,
         concurrency=concurrency,
         agent_timeout_multiplier=agent_timeout_multiplier,
+        env_kwargs=env_kwargs,
         seed_agent_import_path=seed_agent_import_path,
         timeout_s=timeout_s,
         dry_run=dry_run,
@@ -740,6 +771,7 @@ def run_terminus_frontier(
         "target_system": DEFAULT_TERMINUS_AGENT_NAME,
         "dataset": dataset,
         "environment": env,
+        "environment_kwargs": list(env_kwargs),
         "split": split,
         "limit": limit,
         "count": len(instances),

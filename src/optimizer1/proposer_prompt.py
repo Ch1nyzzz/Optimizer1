@@ -1,19 +1,18 @@
 """Prompt builder for proposer iterations.
 
-The static role / objective / quality-gate / edit-scope policies live
-in ``prompts/proposer_system.md`` so they read like a contract rather
-than a Python format string. This module assembles only the
-per-iteration dynamic header (assignment fields, optional diagnoser /
-trace harness / curai-stagnation / bandit blocks, and the
-pending_eval.json schema with live path substitutions), then appends
-the static role document at the end.
+The proposer's static contract — role, objective, search space, quality
+gate, edit scope, workflow — lives in the per-benchmark skill at
+``prompts/skills/<benchmark>/SKILL.md`` and is delivered to the agent
+through the system-prompt channel (``--append-system-prompt`` for Claude,
+``<workspace>/AGENTS.md`` for Codex). This module assembles only the
+per-iteration *user message*: the assignment fields, reference-role and
+bandit blocks, the available-files listing, and the ``pending_eval.json``
+schema with live path substitutions.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-
-from optimizer1.prompts import load_role_prompt
 
 
 _GRAPH_COLOURING_TARGETS = {
@@ -77,31 +76,20 @@ def build_progressive_proposer_prompt(
     selection_policy: str = "progressive",
     bandit_policy: dict[str, object] | None = None,
     benchmark_name: str = "LOCOMO conversational-memory QA",
-    stagnation_active: bool = False,
-    stagnation_count: int = 0,
-    historian_report_exists: bool = False,
-    historian_via_subagent: bool = False,
-    current_frontier_passrate: float | None = None,
-    current_frontier_average_score: float | None = None,
-    current_frontier_best_iter: int | None = None,
     current_base_iter: int | None = None,
     current_base_passrate: float | None = None,
     current_base_average_score: float | None = None,
     state_path: Path | None = None,
     organized: bool = False,
     trace_harness_dir: Path | None = None,
-    diagnoser_via_subagent: bool = False,
-    subagent_mode: bool = False,
 ) -> str:
-    """Build the proposer prompt for scoped progressive-context runs.
+    """Build the proposer's per-iteration user message.
 
-    ``subagent_mode=True`` selects the Claude Code subagent path: the
-    role / workspace constraints are delivered via ``proposer.md`` as
-    the subagent's system prompt and ``workspace.md`` as the
-    auto-loaded ``<workspace>/CLAUDE.md``, so the user message must
-    not duplicate them. Set ``False`` only for the (deprecated) legacy
-    prompt-string injection path that concatenates the role document
-    onto the user message.
+    Returns only the iteration assignment: run/iteration metadata,
+    reference-role and bandit blocks, the available-files listing, the
+    edit scope, and the ``pending_eval.json`` schema. The proposer's
+    static contract is delivered separately as the per-benchmark skill
+    through the system-prompt channel, so it is never inlined here.
     """
 
     direction_lines = "\n".join(f"- {line}" for line in optimization_directions)
@@ -115,7 +103,6 @@ overall system-level redesign:
 
 {direction_lines}
 """
-
     workspace_dir = run_dir
 
     def show(path: Path) -> str:
@@ -183,76 +170,6 @@ overall system-level redesign:
             )
     else:
         reference_role_note = ""
-    historian_section = ""
-    if stagnation_active:
-        if (
-            current_frontier_passrate is not None
-            and current_frontier_best_iter is not None
-        ):
-            frontier_anchor_clause = (
-                f" against the current frontier-best passrate of "
-                f"{current_frontier_passrate:.4f} at "
-                f"iter_{current_frontier_best_iter:03d} (your candidate "
-                f"must strictly exceed it to count as advance)"
-            )
-        else:
-            frontier_anchor_clause = ""
-        if historian_via_subagent:
-            mode_clause = (
-                "Invoke the `historian` subagent via the Task tool"
-                if not historian_report_exists
-                else (
-                    "Invoke the `historian` subagent via the Task tool to "
-                    "incrementally update the existing report"
-                )
-            )
-            existing_clause = (
-                ""
-                if not historian_report_exists
-                else (
-                    " A previous `historian_report.md` from earlier in "
-                    "this episode is already at the workspace root; the "
-                    "subagent will update it in place rather than redo "
-                    "the full diagnosis."
-                )
-            )
-            historian_section = f"""
-## Historian subagent (call first — stalled for {stagnation_count} iters)
-
-The optimization has stalled for {stagnation_count} consecutive iterations{frontier_anchor_clause}.{existing_clause}
-
-Before any other investigation:
-
-1. {mode_clause}. It will read the recent stalled iters' diffs and
-   traces, then write `historian_report.md` at the workspace root with
-   shared dead-end pattern, working hypothesis, and directions to avoid.
-   The historian's full contract is in `.claude/agents/historian.md`;
-   you do not need to restate its instructions to it.
-2. Read `historian_report.md` after the subagent returns.
-3. Combine its **Directions to avoid** with the diagnoser's per-base
-   failure modes when designing this iter's candidate. Reject any
-   mechanism that matches a listed avoid-pattern.
-"""
-        else:
-            existing_clause = (
-                ""
-                if not historian_report_exists
-                else (
-                    " A previous `historian_report.md` from earlier in "
-                    "this episode is already at the workspace root."
-                )
-            )
-            historian_section = f"""
-## Stagnation context (stalled for {stagnation_count} iters)
-
-The optimization has stalled for {stagnation_count} consecutive iterations{frontier_anchor_clause}.{existing_clause}
-
-Read `historian_report.md` if it exists at the workspace root before
-designing this iter's candidate. Combine its **Directions to avoid**
-with the diagnoser's per-base failure modes. Reject any mechanism that
-matches a listed avoid-pattern.
-"""
-
     bandit_section = ""
     if selection_policy == "bandit":
         policy = bandit_policy or {}
@@ -310,73 +227,31 @@ fills a diagnostic gap, read it.
             "- (no cumulative summary files in this run — inspect the raw iteration bundles "
             f"under `{reference_display}/iter_NNN/` instead)"
         )
-    organized_section = ""
     if organized and state_display is not None:
         if include_summaries:
-            organized_summary_guidance = (
-                "Cumulative summary files are available in this ablation, but "
-                "state.md plus EvidenceStore MCP tools are the organized "
-                "interfaces for historical evidence."
-            )
             summaries_assignment_line = (
                 f"- State snapshot: `{state_display}`\n"
                 f"- Cumulative summaries: `{summaries_display}/`"
             )
             summaries_files_block = (
-                f"- `{state_display}` — current optimizer state snapshot generated from EvidenceStore. "
+                f"- `{state_display}` — current optimizer state snapshot generated from RunStore. "
                 "Read this first. It is not evidence and not a plan.\n"
-                "- EvidenceStore MCP tools — query structured modification, trace, and outcome facts. "
+                "- RunStore MCP tools — query structured modification, trace, and outcome facts. "
                 "Do not open or copy the backing SQLite DB directly.\n"
                 f"{summaries_files_block}"
             )
         else:
-            organized_summary_guidance = (
-                "Do not rely on cumulative summary files in organized mode."
-            )
             summaries_assignment_line = (
                 f"- State snapshot: `{state_display}`\n"
                 "- Cumulative summaries: **not provided to the proposer in organized mode**."
             )
             summaries_files_block = (
-                f"- `{state_display}` — current optimizer state snapshot generated from EvidenceStore. "
+                f"- `{state_display}` — current optimizer state snapshot generated from RunStore. "
                 "Read this first. It is not evidence and not a plan.\n"
-                "- EvidenceStore MCP tools — query structured modification, trace, and outcome facts. "
+                "- RunStore MCP tools — query structured modification, trace, and outcome facts. "
                 "Do not open or copy the backing SQLite DB directly.\n"
                 "- (no cumulative summary files in organized mode)"
             )
-        organized_section = f"""
-## Organized Evidence Contract
-
-Read `{state_display}` first. It is a current state snapshot only; do not treat
-it as evidence, diagnosis, or a suggested plan.
-
-The `evidence-tools` MCP server exposes the current run's historical evidence
-through raw artifact, structured fact, and evidence-link tools.
-
-Raw artifact tools:
-- `mcp__evidence-tools__evidence_artifact_list`
-- `mcp__evidence-tools__evidence_artifact_get`
-- `mcp__evidence-tools__evidence_artifact_search`
-
-Structured fact tools:
-- `mcp__evidence-tools__evidence_fact_state`
-- `mcp__evidence-tools__evidence_fact_candidate_outcome`
-- `mcp__evidence-tools__evidence_fact_compare_iterations`
-- `mcp__evidence-tools__evidence_fact_task_history`
-- `mcp__evidence-tools__evidence_fact_trace`
-- `mcp__evidence-tools__evidence_fact_modification`
-- `mcp__evidence-tools__evidence_fact_proposer_call`
-- `mcp__evidence-tools__evidence_fact_file_history`
-
-Evidence-link tools:
-- `mcp__evidence-tools__evidence_link_for`
-- `mcp__evidence-tools__evidence_link_explain_iteration`
-- `mcp__evidence-tools__evidence_link_chain_task`
-
-{organized_summary_guidance} Inspect the current workspace source, query
-evidence as needed, make one useful modification, and state your hypothesis and
-expected effect in `pending_eval.json`.
-"""
     source_snapshot_display = show(source_snapshot_dir)
     generated_display = show(generated_dir)
     optimization_subject = _optimization_subject(target_system)
@@ -494,28 +369,10 @@ from the clean source."""
             "PERSISTENT_FAIL, BREAKTHROUGH, plus counts-only STABLE_PASS / "
             "NO_BASELINE. Read this first to spot patterns.\n"
             f"- `{trace_display}/spans/iter_NNN/<candidate>.jsonl` — full "
-            "structured traces (one per line; spans cover retrieval, "
-            "generation, and tools). Drill in when the markdown summary "
+            "structured traces (one per line; span data is "
+            "benchmark-dependent and may be empty). Drill in when the markdown summary "
             "doesn't tell you enough.\n"
         )
-
-    diagnoser_section = ""
-    if diagnoser_via_subagent:
-        diagnoser_section = """
-## Diagnoser subagent (call first)
-
-Before any other investigation, invoke the `diagnoser` subagent via
-the Task tool. It will explore traces and source, then write
-`diagnoser_report.md` at the workspace root. Read that report before
-designing this iteration's candidate.
-"""
-
-    # Legacy path concatenates the agent's role document and the
-    # workspace constraints into the user message. The Claude Code
-    # subagent path bypasses this entirely (role goes via
-    # --append-system-prompt and constraints via the workspace's
-    # CLAUDE.md), so it never sees role_block.
-    role_block = load_role_prompt("proposer") + "\n" + load_role_prompt("workspace")
 
     iteration_header = f"""# OptiHarness Proposer — iteration {iteration}
 
@@ -535,8 +392,6 @@ You are optimizing the {optimization_subject} for {benchmark_name}.
 - Required output: `{pending_eval_display}`
 
 {starting_point_block}
-{diagnoser_section}
-{organized_section}
 {focus_section}
 {bandit_section}
 
@@ -556,7 +411,6 @@ You are optimizing the {optimization_subject} for {benchmark_name}.
 - `{generated_display}/` — optional importable wrapper modules for this
   iteration.
 {trace_harness_section}
-{historian_section}
 
 ## Edit Scope
 
@@ -602,17 +456,6 @@ Schema:
 ```
 
 Iteration-specific note: {source_path_note}
-
----
-
 """
 
-    if subagent_mode or diagnoser_via_subagent:
-        # In subagent mode the role document is loaded as the subagent
-        # system prompt and <workspace>/CLAUDE.md provides the project
-        # constraints, so the user message must not duplicate them.
-        # ``diagnoser_via_subagent`` is kept as an alias for backward
-        # compatibility with call sites that signal subagent mode by
-        # gating on the diagnoser.
-        return iteration_header
-    return iteration_header + role_block
+    return iteration_header

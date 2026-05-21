@@ -102,7 +102,7 @@ start_one() {
   if [ "$arm" = "baseline" ]; then
     arm_args=(--selection-policy default --proposer-no-trace-harness-section)
   else
-    arm_args=(--selection-policy pareto --diagnose)
+    arm_args=(--selection-policy pareto)
   fi
 
   local test_args=()

@@ -140,7 +140,7 @@ start_one() {
     arm_args=(--selection-policy default)
     run_id="${task_label}_claudekimi_k26_maxeffort_baseline_iter${ITERATIONS}_${TS}"
   elif [ "$arm" = "rebase" ]; then
-    arm_args=(--selection-policy pareto --no-historian)
+    arm_args=(--selection-policy pareto)
     run_id="${task_label}_claudekimi_k26_maxeffort_rebase_nohistorian_iter${ITERATIONS}_${TS}"
   else
     printf '[%s] SKIP unknown_arm=%s\n' "$(date -Is)" "$arm" >> "$status_file"

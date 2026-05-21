@@ -4,17 +4,16 @@ Each Terminus task result produced by ``TerminusHarborRunner`` carries its
 useful information in ``metadata`` (reward, token counts, episode count,
 cost, returncodes) rather than in the QA-style question/gold/prediction
 slots. The full multi-step agent trajectory lives under
-``metadata.trial_dir``. Like the SWE-bench adapter, this stays intentionally
-shallow — one ``agent`` span per task — so renderer output is consistent
-with the other benchmarks. Parsing ``trial_dir`` into nested tool spans is a
-follow-up.
+``metadata.trial_dir``. Like the SWE-bench adapter, this stays trace-only
+for now rather than emitting a dummy one-step span. Parsing ``trial_dir``
+into real nested tool spans is a follow-up.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..schema import Span, Trace
+from ..schema import Trace
 
 
 def _summary(task: dict[str, Any]) -> dict[str, Any]:
@@ -37,6 +36,7 @@ def _summary(task: dict[str, Any]) -> dict[str, Any]:
         "agent_returncode": metadata.get("agent_returncode"),
         "verifier_returncode": metadata.get("verifier_returncode"),
         "agent_import_path": metadata.get("agent_import_path"),
+        "trial_dir": metadata.get("trial_dir"),
     }
 
 
@@ -51,28 +51,6 @@ class TerminusAdapter:
         task: dict[str, Any],
     ) -> Trace:
         task_id = str(task.get("task_id") or "")
-        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        agent_span = Span(
-            id="s1",
-            kind="agent",
-            input={"task": metadata.get("terminus_task_id") or task.get("question") or ""},
-            output={
-                "passed": bool(task.get("passed")),
-                "reward": task.get("score"),
-            },
-            metadata={
-                "terminus_task_id": metadata.get("terminus_task_id"),
-                "attempt": metadata.get("attempt"),
-                "trial_dir": metadata.get("trial_dir"),
-                "agent_import_path": metadata.get("agent_import_path"),
-                "n_episodes": metadata.get("n_episodes"),
-                "n_api_calls": metadata.get("n_api_calls"),
-                "cost_usd": metadata.get("cost_usd"),
-                "cache_tokens": metadata.get("cache_tokens"),
-                "agent_returncode": metadata.get("agent_returncode"),
-                "verifier_returncode": metadata.get("verifier_returncode"),
-            },
-        )
         return Trace(
             trace_id=f"iter{iteration:03d}_{candidate_id}_{task_id}",
             iteration=iteration,
@@ -81,5 +59,5 @@ class TerminusAdapter:
             benchmark=self.name,
             summary=_summary(task),
             diff=None,
-            spans=[agent_span],
+            spans=[],
         )

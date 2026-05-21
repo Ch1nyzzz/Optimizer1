@@ -4,11 +4,10 @@ This mirrors ``swebench_optimizer.py``: the proposer evolves an agent class
 (seeded from Terminus-KIRA, ``baseline_kira.py``) inside a writable snapshot
 of the vendored ``terminal_bench_2`` reference project, and the candidate is
 scored by running Harbor on Terminal-Bench 2.0. Everything that is not the
-scaffold itself — the outer loop, all selection policies, the diagnoser and
-historian subagents, the trace MCP tools — is inherited from
-``LocomoOptimizer`` unchanged, so Optimal1's deltas (pareto base resampling
-+ ``--diagnose`` + trace harness) layer on exactly as they do for SWE-bench
-mini.
+scaffold itself — the outer loop, all selection policies, the per-benchmark
+proposer skill, the trace MCP tools — is inherited from ``LocomoOptimizer``
+unchanged, so Optimal1's deltas (pareto base resampling + trace harness)
+layer on exactly as they do for SWE-bench mini.
 """
 
 from __future__ import annotations
@@ -64,6 +63,7 @@ class TerminusOptimizerConfig(OptimizerConfig):
     rollout_trials: int = DEFAULT_TERMINUS_TRIALS
     rollout_concurrency: int = DEFAULT_TERMINUS_CONCURRENCY
     agent_timeout_multiplier: float = DEFAULT_TERMINUS_AGENT_TIMEOUT_MULTIPLIER
+    env_kwargs: tuple[str, ...] = ()
     seed_agent_import_path: str = DEFAULT_TERMINUS_SEED_AGENT_IMPORT_PATH
     include_secondary_baseline: bool = True
     secondary_baseline_name: str = DEFAULT_TERMINUS_SECONDARY_BASELINE_NAME
@@ -110,6 +110,7 @@ class TerminusOptimizer(LocomoOptimizer):
             trials=self.config.rollout_trials,
             concurrency=self.config.rollout_concurrency,
             agent_timeout_multiplier=self.config.agent_timeout_multiplier,
+            env_kwargs=self.config.env_kwargs,
             seed_agent_import_path=self.config.seed_agent_import_path,
             include_secondary_baseline=self.config.include_secondary_baseline,
             secondary_baseline_name=self.config.secondary_baseline_name,
@@ -144,6 +145,7 @@ class TerminusOptimizer(LocomoOptimizer):
             trials=self.config.rollout_trials,
             concurrency=self.config.rollout_concurrency,
             agent_timeout_multiplier=self.config.agent_timeout_multiplier,
+            env_kwargs=self.config.env_kwargs,
             seed_agent_import_path=self.config.seed_agent_import_path,
             timeout_s=self.config.job_timeout_s,
             dry_run=self.config.dry_run,
@@ -180,6 +182,7 @@ class TerminusOptimizer(LocomoOptimizer):
             trials=self.config.rollout_trials,
             concurrency=self.config.rollout_concurrency,
             agent_timeout_multiplier=self.config.agent_timeout_multiplier,
+            env_kwargs=self.config.env_kwargs,
             seed_agent_import_path=self.config.seed_agent_import_path,
             timeout_s=self.config.job_timeout_s,
             dry_run=self.config.dry_run,
