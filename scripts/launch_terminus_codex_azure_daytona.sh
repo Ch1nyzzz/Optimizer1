@@ -18,11 +18,14 @@
 # Scale: 20 evolution iterations, 20 tasks/iter (first 20 of the 30-task hard
 # split), 2 attempts/task, all 40 trials per iteration parallel on Daytona.
 #
-# Two arms — identical except for the RunStore tool surface:
-#   * default   arm: --no-summary --selection-policy default
-#                    (no summary files, no RunStore tools)
-#   * organized arm: --organized  --selection-policy default
-#                    (state.md + RunStore tools)
+# Two arms — identical except for the RunStore tool surface. Both arms expose
+# the same upstream-2 summary files (evolution_summary.jsonl +
+# best_candidates.json), so the only variable across arms is the tools:
+#   * default   arm: --selection-policy default
+#                    (upstream-2 summaries, skill mode "default", no RunStore tools)
+#   * organized arm: --organized --selection-policy default
+#                    (upstream-2 summaries, skill mode "organized-summaries",
+#                     generates state.md and registers RunStore tools)
 # Both arms share ONE primed iter-0 KIRA baseline (prime_terminus_baseline),
 # reused via --baseline-dir so the seed frontier is not paid for twice.
 #
@@ -165,7 +168,10 @@ start_one() {
   local arm="$1"
   local arm_args=() run_id log_path
   if [ "$arm" = "default" ]; then
-    arm_args=(--no-summary --selection-policy default)
+    # No summary flag: the proposer gets the upstream-2 summary files and
+    # skill mode "default" (no RunStore tools). --no-summary would instead
+    # withhold the summaries entirely, breaking parity with the organized arm.
+    arm_args=(--selection-policy default)
     run_id="terminus_kira_codex_azure_daytona_default_${SPLIT}_${TS}"
   elif [ "$arm" = "organized" ]; then
     arm_args=(--organized --selection-policy default)

@@ -1028,11 +1028,16 @@ class LocomoOptimizer:
         return self.config.proposer_agent.strip().lower() == "claude"
 
     def _proposer_skill_mode(self) -> str:
-        """Return the evidence-workflow mode for the proposer skill."""
+        """Return the evidence-workflow mode for the proposer skill.
+
+        Two independent axes: ``--organized`` selects the organized
+        interface, and the summary axis (``_summaries_in_workspace_enabled``)
+        selects whether the upstream summary files are exposed.
+        """
 
         if not self.config.organized:
             return "default"
-        if self.config.organized_include_summaries:
+        if self._summaries_in_workspace_enabled():
             return "organized-summaries"
         return "organized"
 
@@ -1286,18 +1291,15 @@ class LocomoOptimizer:
                 fh.write("\n")
 
     def _copy_workspace_summaries(self, summaries_dir: Path) -> None:
+        # Only the two upstream meta-harness summary files are exposed to the
+        # proposer: the full event history and the current quality frontier.
+        # The other run-level digests (candidate_score_table, retrieval
+        # diagnostics, iteration_index, diff_summary) are still written under
+        # the run directory but are not copied into the proposer workspace.
         summaries_dir.mkdir(parents=True, exist_ok=True)
         summary_files = (
             (self.summary_path, "evolution_summary.jsonl", ""),
             (self.frontier_path, "best_candidates.json", "[]\n"),
-            (self.candidate_score_table_path, "candidate_score_table.json", "[]\n"),
-            (
-                self.retrieval_diagnostics_summary_path,
-                "retrieval_diagnostics_summary.json",
-                "[]\n",
-            ),
-            (self.iteration_index_path, "iteration_index.json", "[]\n"),
-            (self.diff_summary_path, "diff_summary.jsonl", ""),
         )
         for src, name, default_text in summary_files:
             dest = summaries_dir / name
@@ -1307,11 +1309,8 @@ class LocomoOptimizer:
                 dest.write_text(default_text, encoding="utf-8")
 
     def _summaries_in_workspace_enabled(self) -> bool:
-        if not self.config.summaries_in_workspace:
-            return False
-        if self.config.organized and not self.config.organized_include_summaries:
-            return False
-        return True
+        # Independent of --organized: governed solely by the summary axis.
+        return self.config.summaries_in_workspace
 
     def _copy_reference_iterations(
         self,

@@ -11,11 +11,13 @@ Launch script: [`scripts/launch_terminus_codex_azure_daytona.sh`](../scripts/lau
 - **20 evolution iterations**, **20 tasks/iter** (the first 20 of the 30-task
   TB2 "hard" split), **2 attempts/task** — all 40 trials per iteration run in
   parallel on Daytona.
-- **Two arms**, identical except for the RunStore tool surface:
-  - `default` — `--no-summary --selection-policy default` (no summary files,
-    no RunStore tools).
-  - `organized` — `--organized --selection-policy default` (generates
-    `state.md`, registers RunStore tools).
+- **Two arms**, identical except for the RunStore tool surface. Both arms
+  expose the same upstream-2 summary files (`evolution_summary.jsonl` +
+  `best_candidates.json`), so the only variable across arms is the tools:
+  - `default` — `--selection-policy default` (skill mode `default`, no
+    RunStore tools).
+  - `organized` — `--organized --selection-policy default` (skill mode
+    `organized-summaries`: generates `state.md`, registers RunStore tools).
 - Both arms **share one primed iter-0 KIRA baseline** (reused via
   `--baseline-dir`), so the seed frontier is evaluated once, not twice.
 - After the 20 iterations each arm **automatically evaluates its best train

@@ -184,10 +184,9 @@ overall system-level redesign:
 ## Bandit Context Policy
 
 This iteration uses online file-utility estimates to suggest where to start.
-Begin with the compact summaries (`candidate_score_table.json`,
-`retrieval_diagnostics_summary.json`, `diff_summary.jsonl`). Read
-`evolution_summary.jsonl` and `best_candidates.json` whenever you need to trace
-cross-iteration patterns or identify a strong parent to build on.
+Read `evolution_summary.jsonl` and `best_candidates.json` (when a `summaries/`
+directory is provided) whenever you need to trace cross-iteration patterns or
+identify a strong parent to build on.
 
 The hot/other lists below are advisory and reflect historical reads only;
 they do not restrict what you may read. If a file under "Other tracked files"
@@ -207,14 +206,7 @@ fills a diagnostic gap, read it.
             f"- `{summaries_display}/evolution_summary.jsonl` — full cumulative event history\n"
             f"  through the previous iteration.\n"
             f"- `{summaries_display}/best_candidates.json` — current passrate/average_score\n"
-            f"  quality Pareto frontier candidates.\n"
-            f"- `{summaries_display}/candidate_score_table.json` — compact metrics for all\n"
-            f"  evaluated candidates.\n"
-            f"- `{summaries_display}/retrieval_diagnostics_summary.json` — cumulative failure\n"
-            f"  and retrieval-pattern summary.\n"
-            f"- `{summaries_display}/iteration_index.json` — paths for prior iteration\n"
-            f"  artifacts.\n"
-            f"- `{summaries_display}/diff_summary.jsonl` — compact source-change records."
+            f"  quality Pareto frontier candidates."
         )
     else:
         summaries_assignment_line = (
