@@ -20,6 +20,11 @@ DEFAULT_MODEL = "openai/Qwen3.5-35B-A3B-FP8"
 DEFAULT_BASE_URL = "http://127.0.0.1:8000/v1"
 DEFAULT_MODEL_CLASS = "qwen35_miniswe_model.Qwen35TextModel"
 
+# Hard ceiling for the agent step limit. The runner no longer forces a fixed
+# step limit: the scaffold's own swebench_backticks.yaml value is honored (so
+# the proposer can tune it), but the effective limit never exceeds this cap.
+MAX_STEP_LIMIT = 250
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -36,7 +41,17 @@ def main() -> int:
         default=None,
         help="Environment variable containing the model API key.",
     )
-    parser.add_argument("--step-limit", type=int, default=50)
+    parser.add_argument(
+        "--step-limit",
+        type=int,
+        default=0,
+        help=(
+            "Agent step limit. 0 (default) honors the scaffold's own "
+            "swebench_backticks.yaml value so the proposer can tune it; a "
+            "positive value overrides it. Either way the effective limit is "
+            f"capped at {MAX_STEP_LIMIT}."
+        ),
+    )
     parser.add_argument("--max-tokens", type=int, default=2048)
     args = parser.parse_args()
 
@@ -96,7 +111,7 @@ def run_agent(args: argparse.Namespace, *, root: Path, instance_id: str) -> int:
         "--config",
         "agent.cost_limit=0",
         "--config",
-        f"agent.step_limit={args.step_limit}",
+        f"agent.step_limit={_resolve_step_limit(args)}",
         "--redo-existing",
     ]
     api_key = args.api_key
@@ -203,6 +218,44 @@ def _prepend_paths(existing: str, paths: list[str]) -> str:
     if existing:
         values.append(existing)
     return os.pathsep.join(values)
+
+
+def _yaml_step_limit(source_path: Path) -> int:
+    """Return ``agent.step_limit`` from the scaffold's swebench_backticks.yaml.
+
+    Uses a line regex so this script needs no YAML dependency of its own.
+    Returns 0 when the file or the key is absent.
+    """
+    yaml_path = (
+        source_path
+        / "src"
+        / "minisweagent"
+        / "config"
+        / "benchmarks"
+        / "swebench_backticks.yaml"
+    )
+    try:
+        text = yaml_path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    match = re.search(r"(?m)^[ \t]*step_limit:[ \t]*(\d+)", text)
+    return int(match.group(1)) if match else 0
+
+
+def _resolve_step_limit(args: argparse.Namespace) -> int:
+    """Resolve the effective agent step limit.
+
+    The runner does not force a fixed step limit. With ``--step-limit 0`` (the
+    default) the scaffold's own swebench_backticks.yaml value is used, so the
+    proposer can tune it; a positive ``--step-limit`` overrides that. The
+    result is always capped at ``MAX_STEP_LIMIT`` and never below 1.
+    """
+    requested = args.step_limit
+    if requested <= 0:
+        requested = _yaml_step_limit(args.source_path)
+    if requested <= 0:
+        requested = MAX_STEP_LIMIT
+    return min(requested, MAX_STEP_LIMIT)
 
 
 def _safe_id(value: str) -> str:
