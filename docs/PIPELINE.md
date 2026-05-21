@@ -32,7 +32,10 @@ reading it you should be able to:
 > `episode_control`, `all`) port the SKILL.md proposer prior onto the
 > overridable `Terminus2` methods. Headline results are pending — the first
 > KIRA baseline run on the `hard` split calibrates per-rollout cost and
-> wall-clock before a full Optimal1 vs baseline comparison.
+> wall-clock before a full Optimal1 vs baseline comparison. The rollout
+> sandbox is also pluggable: `--terminus-env daytona` runs each trial in a
+> remote Daytona cloud sandbox instead of local docker — see
+> [`TERMINUS_DAYTONA.md`](TERMINUS_DAYTONA.md).
 
 Per-cell result tables live in
 [`experiment_detail.md`](experiment_detail.md); cross-run observations

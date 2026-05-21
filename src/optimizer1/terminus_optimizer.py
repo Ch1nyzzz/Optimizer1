@@ -63,6 +63,7 @@ class TerminusOptimizerConfig(OptimizerConfig):
     rollout_trials: int = DEFAULT_TERMINUS_TRIALS
     rollout_concurrency: int = DEFAULT_TERMINUS_CONCURRENCY
     agent_timeout_multiplier: float = DEFAULT_TERMINUS_AGENT_TIMEOUT_MULTIPLIER
+    env_kwargs: tuple[str, ...] = ()
     seed_agent_import_path: str = DEFAULT_TERMINUS_SEED_AGENT_IMPORT_PATH
     include_secondary_baseline: bool = True
     secondary_baseline_name: str = DEFAULT_TERMINUS_SECONDARY_BASELINE_NAME
@@ -109,6 +110,7 @@ class TerminusOptimizer(LocomoOptimizer):
             trials=self.config.rollout_trials,
             concurrency=self.config.rollout_concurrency,
             agent_timeout_multiplier=self.config.agent_timeout_multiplier,
+            env_kwargs=self.config.env_kwargs,
             seed_agent_import_path=self.config.seed_agent_import_path,
             include_secondary_baseline=self.config.include_secondary_baseline,
             secondary_baseline_name=self.config.secondary_baseline_name,
@@ -143,6 +145,7 @@ class TerminusOptimizer(LocomoOptimizer):
             trials=self.config.rollout_trials,
             concurrency=self.config.rollout_concurrency,
             agent_timeout_multiplier=self.config.agent_timeout_multiplier,
+            env_kwargs=self.config.env_kwargs,
             seed_agent_import_path=self.config.seed_agent_import_path,
             timeout_s=self.config.job_timeout_s,
             dry_run=self.config.dry_run,
@@ -179,6 +182,7 @@ class TerminusOptimizer(LocomoOptimizer):
             trials=self.config.rollout_trials,
             concurrency=self.config.rollout_concurrency,
             agent_timeout_multiplier=self.config.agent_timeout_multiplier,
+            env_kwargs=self.config.env_kwargs,
             seed_agent_import_path=self.config.seed_agent_import_path,
             timeout_s=self.config.job_timeout_s,
             dry_run=self.config.dry_run,

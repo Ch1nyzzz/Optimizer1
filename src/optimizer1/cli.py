@@ -735,7 +735,22 @@ def main() -> int:
     optimize.add_argument(
         "--terminus-env",
         default=DEFAULT_TERMINUS_ENV,
-        help="Harbor environment type for rollouts (default: docker; e.g. runloop, daytona).",
+        help=(
+            "Harbor environment type for rollouts (default: docker; e.g. "
+            "runloop, daytona). 'daytona' runs each trial in a remote Daytona "
+            "cloud sandbox and needs DAYTONA_API_KEY set."
+        ),
+    )
+    optimize.add_argument(
+        "--terminus-env-kwargs",
+        action="append",
+        default=[],
+        help=(
+            "Harbor environment kwarg as key=value, forwarded as `--ek`. "
+            "Repeatable and comma-separated. Daytona keys: "
+            "auto_stop_interval_mins, auto_delete_interval_mins, dind_image, "
+            "dind_snapshot, network_block_all."
+        ),
     )
     optimize.add_argument(
         "--terminus-harbor-command",
@@ -772,7 +787,11 @@ def main() -> int:
         "--terminus-rollout-concurrency",
         type=int,
         default=DEFAULT_TERMINUS_CONCURRENCY,
-        help="Max concurrent harbor trials (default: 12 for a local docker box; raise for runloop).",
+        help=(
+            "Max concurrent harbor trials (default: 12 for a local docker box; "
+            "raise for runloop; for daytona keep it at or below your account's "
+            "concurrent-sandbox quota)."
+        ),
     )
     optimize.add_argument(
         "--terminus-agent-timeout-multiplier",
@@ -1076,6 +1095,7 @@ def main() -> int:
                     terminus_source_path=args.terminus_source_path,
                     dataset=args.terminus_dataset,
                     harbor_environment=args.terminus_env,
+                    env_kwargs=tuple(_csv_many(args.terminus_env_kwargs)),
                     harbor_command=args.terminus_harbor_command,
                     solver_model=args.terminus_solver_model,
                     solver_base_url=args.terminus_solver_base_url,

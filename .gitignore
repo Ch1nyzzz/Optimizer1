@@ -20,6 +20,9 @@ htmlcov/
 *.local
 *.log
 
+# SWE-bench evaluation report artifacts dumped at repo root
+memomemo_candidate.*.json
+
 references/vendor/*/.git/
 references/vendor/graph-colouring/
 
