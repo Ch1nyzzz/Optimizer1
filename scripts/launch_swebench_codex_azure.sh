@@ -75,6 +75,8 @@ CODEX_HOME="${CODEX_HOME:-}"   # empty => ~/.codex (must hold the Azure config.t
 # the Terminal-Bench experiment uses. Override all three to point mini-SWE-agent
 # at an endpoint you have access to. SOLVER_API_KEY_ENV names the .env variable
 # holding the key (default DEEPSEEK_API_KEY, shared with the Terminal-Bench run).
+# SOLVER_MODEL is a litellm <provider>/<model> id — set it to match how your
+# DeepSeek-V4-Pro provider/endpoint is configured.
 SOLVER_MODEL="${SOLVER_MODEL:-openai/deepseek-v4-pro}"
 SOLVER_BASE_URL="${SOLVER_BASE_URL:-https://api.deepseek.com/v1}"
 SOLVER_API_KEY_ENV="${SOLVER_API_KEY_ENV:-DEEPSEEK_API_KEY}"

@@ -237,6 +237,17 @@ SOLVER_API_KEY_ENV=你的KEY变量名 \
 `SOLVER_API_KEY_ENV` 写的是 **`.env` 里存放 key 的那个变量名**（不是 key 本身）。
 这套变量名和 Terminal-Bench 启动脚本完全一致 —— 两个实验配一次即可通用。
 
+> **`SOLVER_MODEL` 怎么填 —— 重要。** `openai/deepseek-v4-pro` 是一个 **litellm
+> 模型 id**，格式为 `<provider>/<模型名>`，**这个默认值很可能要按你们
+> DeepSeek-V4-Pro 的接入方式改**：
+> - **`openai/` 前缀** —— 让 litellm 走「OpenAI 兼容」适配器，配合
+>   `SOLVER_BASE_URL` 打到你的端点。若你们的 DeepSeek-V4-Pro 是经别的 provider
+>   接入（litellm 原生 `deepseek/`、或某云厂商的适配器），前缀要换成对应的。
+> - **`deepseek-v4-pro` 部分** —— 必须是**你们端点/provider 实际认的模型名**，
+>   不同部署叫法不同。
+> - 请按你们 DeepSeek-V4-Pro 这个 provider 的文档/部署配置，确认正确的
+>   `SOLVER_MODEL`（和 `SOLVER_BASE_URL`）再启动。
+
 ---
 
 ## 10. 常见问题
