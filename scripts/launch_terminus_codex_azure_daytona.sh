@@ -85,7 +85,9 @@ CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-high}"
 CODEX_HOME="${CODEX_HOME:-}"   # empty => ~/.codex (must hold the Azure config.toml)
 
 # Terminus solver — DeepSeek-V4 on your own endpoint. Override all three to
-# point at the endpoint you have access to.
+# point at the endpoint you have access to. SOLVER_MODEL is a litellm
+# <provider>/<model> id — set it to match how your DeepSeek-V4-Pro
+# provider/endpoint is configured.
 SOLVER_MODEL="${SOLVER_MODEL:-openai/deepseek-v4-pro}"
 SOLVER_BASE_URL="${SOLVER_BASE_URL:-https://api.deepseek.com/v1}"
 SOLVER_API_KEY_ENV="${SOLVER_API_KEY_ENV:-DEEPSEEK_API_KEY}"

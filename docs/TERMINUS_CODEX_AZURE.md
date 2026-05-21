@@ -101,6 +101,17 @@ SOLVER_API_KEY_ENV=YOUR_KEY_VAR \
 
 `SOLVER_API_KEY_ENV` names the variable in `.env` that holds the key.
 
+> **What to put in `SOLVER_MODEL` — important.** `openai/deepseek-v4-pro` is a
+> **litellm model id** in `<provider>/<model-name>` form, and the default very
+> likely needs adjusting to however your DeepSeek-V4-Pro is provisioned:
+> - the **`openai/` prefix** selects litellm's OpenAI-compatible adapter (used
+>   together with `SOLVER_BASE_URL`). If your DeepSeek-V4-Pro is reached
+>   through a different provider, change the prefix to match.
+> - the **`deepseek-v4-pro` part** must be the exact model name your
+>   endpoint/provider expects — it varies between deployments.
+> - Check your DeepSeek-V4-Pro provider's docs / deployment config for the
+>   correct `SOLVER_MODEL` (and `SOLVER_BASE_URL`).
+
 ### Knobs (env vars)
 
 | Var | Default | Meaning |
