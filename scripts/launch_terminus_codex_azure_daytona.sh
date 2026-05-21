@@ -140,7 +140,7 @@ baseline_run_id="terminus_kira_codex_azure_daytona_baseline_${SPLIT}_limit${LIMI
 BASELINE_DIR="${BASELINE_DIR:-runs/${baseline_run_id}}"
 
 prime_terminus_baseline() {
-  if [ -f "${BASELINE_DIR}/run_summary.json" ]; then
+  if [ -f "${BASELINE_DIR}/optimizer_summary.json" ]; then
     printf '[%s] BASELINE_REUSE %s\n' "$(date -Is)" "$BASELINE_DIR" >> "$status_file"
     return 0
   fi
@@ -155,7 +155,7 @@ prime_terminus_baseline() {
     --no-test-frontier \
     > "$prime_log" 2>&1
   local rc=$?
-  if [ "$rc" -ne 0 ] || [ ! -f "${BASELINE_DIR}/run_summary.json" ]; then
+  if [ "$rc" -ne 0 ] || [ ! -f "${BASELINE_DIR}/optimizer_summary.json" ]; then
     printf '[%s] BASELINE_PRIME_FAIL rc=%s log=%s\n' \
       "$(date -Is)" "$rc" "$prime_log" >> "$status_file"
     return 1
