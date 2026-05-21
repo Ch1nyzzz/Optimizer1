@@ -1,4 +1,4 @@
-# SWE-bench 对比实验运行说明（Codex/Azure × 本机 Docker）
+# SWE-bench 对比实验运行说明（Codex/Azure × DeepSeek-V4-Pro × 本机 Docker）
 
 本文档面向**拿到仓库后要在自己机器上跑这个实验的同事**，一步步照做即可。
 对应的启动脚本是
@@ -16,18 +16,18 @@
 在 **SWE-bench**（mini-SWE-agent 代码智能体）上做 **default vs organized 对比**：
 
 - **proposer（出代码的智能体）** = Codex CLI，通过 **Azure OpenAI** 鉴权。
-- **eval model（mini-SWE-agent 解题时驱动的基座模型）** = 跑在**你自己的远程
-  OpenAI 兼容端点**上。
+- **solver（mini-SWE-agent 解题时驱动的基座模型）** = **DeepSeek-V4-Pro**，
+  跑在**你自己的端点**上 —— 和 Terminal-Bench 实验用的是同一个基座模型。
 - **评测** = **官方 SWE-bench harness**，每个候选补丁在一个 **per-instance 的
   Docker 容器**里跑测试，**全部在本机**。
 
-规模：**30 轮进化**，每轮在 **30 道 train 题**上优化。两个对照臂，**唯一区别是
-organized 臂多了一组 RunStore 工具**，其余完全一致：
+规模：**30 轮进化**，每轮在 **30 道 train 题**上优化。两个对照臂 —— **两臂都带
+上游 summary，唯一区别是 organized 臂多了一组 RunStore 工具**：
 
 | 臂 | 命令差异 | 含义 |
 |---|---|---|
-| `default` | `--selection-policy default` | skill 模式 `default`，无 RunStore 工具 |
-| `organized` | `--organized --selection-policy default` | skill 模式 `organized-summaries`，生成 `state.md`，注册 RunStore 工具 |
+| `default` | `--selection-policy default` | 上游 summary + skill 模式 `default`，无 RunStore 工具 |
+| `organized` | `--organized --selection-policy default` | 上游 summary + skill 模式 `organized-summaries`，生成 `state.md`，注册 RunStore 工具 |
 
 两臂**共用同一个 primed baseline**（iter-0 种子边界），通过 `--baseline-dir`
 复用。跑完 30 轮后，每个臂会把训练边界上最好的 1 个候选拿到**留出 test 集**上
@@ -48,7 +48,7 @@ organized 臂多了一组 RunStore 工具**，其余完全一致：
 | Node + Codex CLI | `npm install -g @openai/codex` |
 | `uv` / `uvx` | 跑题和评测都通过 `uvx` 调用；`curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | Azure OpenAI | 一个 GPT-5 codex/推理模型的 deployment，记下 endpoint 和 key |
-| eval 模型端点 | 一个你能访问的远程 OpenAI 兼容端点，给 mini-SWE-agent 当基座模型 |
+| DeepSeek-V4-Pro 端点 | 一个你能访问的 DeepSeek-V4-Pro 端点（官方 API 或你自己部署的），给 mini-SWE-agent 当基座模型 |
 
 关于机器资源：官方 SWE-bench Verified 每道题的 Docker 镜像有数 GB。脚本用
 `--cache_level instance --clean True`，每道题评完会清掉镜像，所以峰值磁盘由
@@ -115,15 +115,19 @@ cp .env.example .env
 $EDITOR .env
 ```
 
-**这个实验只需要填这几个**（`DAYTONA_*` / `DEEPSEEK_*` / `JUDGE_*` 是别的
-实验用的，保持占位符不动）：
+**这个实验只需要填这 2 个**（`DAYTONA_*` / `EVAL_*` / `JUDGE_*` 是别的实验
+用的，保持占位符不动）：
 
 | 变量 | 填什么 |
 |---|---|
 | `AZURE_OPENAI_API_KEY` | `config.toml` 里那个 Azure 资源的 key |
-| `EVAL_BASE_URL` | 你的 eval 模型端点，如 `https://你的端点/v1` |
-| `EVAL_MODEL` | 该端点上的模型名 |
-| `EVAL_API_KEY` | 该端点的 key（端点不需要鉴权可留占位符） |
+| `DEEPSEEK_API_KEY` | 你的 DeepSeek-V4-Pro 端点的 key |
+
+`DEEPSEEK_API_KEY` 和 Terminal-Bench 实验是同一个 —— 两个实验共用一个
+DeepSeek-V4-Pro 基座。
+
+如果你的 DeepSeek-V4-Pro **不是官方 `api.deepseek.com`**，见第 9 节，启动时用
+`SOLVER_MODEL` / `SOLVER_BASE_URL` / `SOLVER_API_KEY_ENV` 指到你自己的端点。
 
 `.env` 已被 `.gitignore` 排除 —— **绝对不要提交**，本仓库是公开的。
 
@@ -139,7 +143,7 @@ $EDITOR .env
 DRY_RUN=1 bash scripts/launch_swebench_codex_azure.sh
 ```
 
-### 5.2 极小规模冒烟测试（确认 Docker / Azure / eval 端点都通）
+### 5.2 极小规模冒烟测试（确认 Docker / Azure / DeepSeek 端点都通）
 
 ```bash
 ITERATIONS=1 SWE_LIMIT=2 EVAL_WORKERS=2 TEST_FRONTIER_LIMIT=2 \
@@ -208,14 +212,34 @@ status 文件关键标记：`BASELINE_PRIME` / `BASELINE_PRIME_DONE`、`START` +
 | `CODEX_MODEL` | `gpt-5.1-codex` | 你的 Azure deployment 名称 |
 | `CODEX_REASONING_EFFORT` | `high` | Codex proposer 推理强度 |
 | `CODEX_HOME` | 不设 → `~/.codex` | 存放 Azure `config.toml` 的目录 |
-| `EVAL_BASE_URL` / `EVAL_MODEL` / `EVAL_API_KEY_ENV` | 取自 `.env` | eval 模型端点 |
+| `SOLVER_MODEL` | `openai/deepseek-v4-pro` | mini-SWE-agent 的基座模型 |
+| `SOLVER_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek-V4-Pro 端点 |
+| `SOLVER_API_KEY_ENV` | `DEEPSEEK_API_KEY` | `.env` 里存放该端点 key 的变量名 |
 | `SWE_DATA_PATH` | `data/swebench_train_volatile30.json` | 数据集路径 |
 | `BASELINE_DIR` | `runs/...baseline...` | 复用已 prime 好的 baseline |
 | `DRY_RUN` | `0` | `1` = 只做接线自检 |
 
 ---
 
-## 9. 常见问题
+## 9. 把 solver 指到你自己的 DeepSeek-V4-Pro 端点
+
+脚本默认指向官方 DeepSeek API
+（`openai/deepseek-v4-pro` @ `https://api.deepseek.com/v1`，key 取
+`DEEPSEEK_API_KEY`）。要换成你自己部署的端点，三个变量一起覆盖：
+
+```bash
+SOLVER_MODEL=openai/你的deepseek模型名 \
+SOLVER_BASE_URL=https://你的端点/v1 \
+SOLVER_API_KEY_ENV=你的KEY变量名 \
+  bash scripts/launch_swebench_codex_azure.sh
+```
+
+`SOLVER_API_KEY_ENV` 写的是 **`.env` 里存放 key 的那个变量名**（不是 key 本身）。
+这套变量名和 Terminal-Bench 启动脚本完全一致 —— 两个实验配一次即可通用。
+
+---
+
+## 10. 常见问题
 
 **为什么必须有 Docker。** SWE-bench 的评测用的是官方 harness
 （`swebench.harness.run_evaluation`），它给每道题构建/拉取一个独立的 Docker
@@ -226,11 +250,11 @@ status 文件关键标记：`BASELINE_PRIME` / `BASELINE_PRIME_DONE`、`START` +
 时跑完会把最好的候选在全部 470 道上评一遍（470 次 agent 跑题 + 470 次 Docker
 评测）。机器不够强或只想看个大概，把 `TEST_FRONTIER_LIMIT` 调小（如 `50`）。
 
-**成本提醒。** 经验值每轮约 16–17M token（proposer ~5.5M + 基座模型 ~11M），
-30 轮 × 2 臂 很贵。先用 5.2 的冒烟测试确认无误再跑全量。
+**成本提醒。** 经验值每轮约 16–17M token（proposer ~5.5M + DeepSeek-V4-Pro
+~11M），30 轮 × 2 臂 很贵。先用 5.2 的冒烟测试确认无误再跑全量。
 
 **不依赖 Together AI。** 旧脚本把基座模型硬连在 Together 上，这个可移植脚本
-已改成你自己的 `EVAL_*` 端点，不需要 `TOGETHER_API_KEY`。
+已改成你自己的 DeepSeek-V4-Pro 端点，不需要 `TOGETHER_API_KEY`。
 
 **`trace_similar` 工具（organized 臂）。** organized 臂会注册 RunStore 工具，
 其中 `trace_similar` 需要一个 OpenAI 兼容的 embedding 端点。有就在 `.env` 里设
