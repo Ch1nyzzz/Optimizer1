@@ -598,12 +598,13 @@ def main() -> int:
         "--no-summary",
         action="store_true",
         help=(
-            "Withhold the cumulative cross-session summary from the proposer: "
-            "the workspace `summaries/` directory (evolution_summary, "
-            "best_candidates, candidate_score_table, etc.) is not created and "
-            "the prompt's summary section is replaced with a note pointing at "
-            "the raw `reference_iterations/iter_NNN/` bundles instead. The "
-            "no-summary probe (tests what the cumulative digest actually buys)."
+            "Withhold the upstream cumulative summary from the proposer. By "
+            "default the workspace `summaries/` directory carries the two "
+            "upstream meta-harness summary files (`evolution_summary.jsonl` "
+            "and `best_candidates.json`); with --no-summary that directory is "
+            "not created and the prompt points the proposer at the raw "
+            "`reference_iterations/iter_NNN/` bundles instead. Independent of "
+            "--organized: the no-summary probe applies to both modes."
         ),
     )
     optimize.add_argument(
@@ -611,17 +612,18 @@ def main() -> int:
         action="store_true",
         help=(
             "Use the organized optimizer interface: generate state.md from "
-            "RunStore, register RunStore tools, and withhold cumulative "
-            "summaries from the proposer workspace."
+            "RunStore and register RunStore tools for the proposer. The "
+            "summary axis is orthogonal and controlled by --no-summary."
         ),
     )
     optimize.add_argument(
         "--organized-include-summaries",
         action="store_true",
         help=(
-            "With --organized, also copy the cumulative summaries/ directory "
-            "into the proposer workspace. This is an ablation of organized "
-            "state.md + tools with summaries still available."
+            "Deprecated no-op. The summary axis is now controlled by "
+            "--no-summary independently of --organized; plain --organized "
+            "already keeps the upstream summaries. Accepted only so older "
+            "launch scripts do not error."
         ),
     )
     optimize.add_argument("--longmemeval-variant", choices=("s", "m", "oracle"), default="s")
@@ -1314,11 +1316,10 @@ def _csv_many(values: list[str] | tuple[str, ...]) -> list[str]:
 
 
 def _summaries_in_workspace(args: argparse.Namespace) -> bool:
-    if args.no_summary:
-        return False
-    if args.organized and not args.organized_include_summaries:
-        return False
-    return True
+    # The summary axis is independent of --organized: --no-summary withholds
+    # the two upstream summary files (evolution_summary.jsonl +
+    # best_candidates.json) in both default and organized mode.
+    return not args.no_summary
 
 
 def _load_project_env() -> None:

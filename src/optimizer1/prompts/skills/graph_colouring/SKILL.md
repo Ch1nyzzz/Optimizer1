@@ -101,11 +101,13 @@ surfaces under the copied upstream snapshot
 ## Evidence interface
 
 <!-- MODE:default -->
-Begin with the cumulative summaries when available: `candidate_score_table.json`,
-`best_candidates.json`, `diff_summary.jsonl`, and `evolution_summary.jsonl`.
-Then inspect raw `reference_iterations/iter_NNN/` bundles selectively to validate
-the failure mode and the source change. Do not infer a mechanism from summaries
-alone.
+Begin with whichever cumulative summary files are present under `summaries/` —
+`evolution_summary.jsonl` (the full event history) and `best_candidates.json`
+(the current quality frontier). If no `summaries/` directory is provided this
+run, work directly from the raw `reference_iterations/iter_NNN/` bundles
+instead. Either way, inspect raw `reference_iterations/iter_NNN/` bundles
+selectively to validate the failure mode and the source change. Do not infer a
+mechanism from summaries alone.
 <!-- END MODE:default -->
 <!-- MODE:organized -->
 Read `state.md` first for orientation — it is a current state snapshot only, not
