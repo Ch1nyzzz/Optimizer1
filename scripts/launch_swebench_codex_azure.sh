@@ -8,9 +8,11 @@
 #   * proposer   = Codex CLI authenticated against Azure OpenAI. Auth is an API
 #                  key in ~/.codex/config.toml (template: docs/codex_config.azure.toml);
 #                  there is no interactive Codex "login" for Azure.
-#   * eval model = the model mini-SWE-agent drives while solving each SWE-bench
-#                  task. It runs on YOUR OWN remote OpenAI-compatible endpoint —
-#                  set EVAL_BASE_URL / EVAL_MODEL / EVAL_API_KEY in .env.
+#   * solver     = the DeepSeek-V4-Pro model mini-SWE-agent drives while solving
+#                  each SWE-bench task — the same base model as the Terminal-Bench
+#                  experiment. It runs on YOUR OWN endpoint; override
+#                  SOLVER_MODEL / SOLVER_BASE_URL / SOLVER_API_KEY_ENV. Defaults
+#                  point at the official DeepSeek API.
 #   * eval       = the OFFICIAL SWE-bench harness runs every candidate patch in
 #                  a per-instance Docker container ON THIS MACHINE. You need a
 #                  working Docker daemon and plenty of free disk — there is no
@@ -69,12 +71,14 @@ CODEX_MODEL="${CODEX_MODEL:-gpt-5.1-codex}"
 CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-high}"
 CODEX_HOME="${CODEX_HOME:-}"   # empty => ~/.codex (must hold the Azure config.toml)
 
-# Scaffold eval model — your own remote OpenAI-compatible endpoint. EVAL_API_KEY_ENV
-# names the .env variable that holds the key (default EVAL_API_KEY).
-EVAL_BASE_URL="${EVAL_BASE_URL:-}"
-EVAL_MODEL="${EVAL_MODEL:-}"
-EVAL_API_KEY_ENV="${EVAL_API_KEY_ENV:-EVAL_API_KEY}"
-eval_api_key="${!EVAL_API_KEY_ENV:-}"
+# SWE-bench solver — DeepSeek-V4-Pro on your own endpoint, the same base model
+# the Terminal-Bench experiment uses. Override all three to point mini-SWE-agent
+# at an endpoint you have access to. SOLVER_API_KEY_ENV names the .env variable
+# holding the key (default DEEPSEEK_API_KEY, shared with the Terminal-Bench run).
+SOLVER_MODEL="${SOLVER_MODEL:-openai/deepseek-v4-pro}"
+SOLVER_BASE_URL="${SOLVER_BASE_URL:-https://api.deepseek.com/v1}"
+SOLVER_API_KEY_ENV="${SOLVER_API_KEY_ENV:-DEEPSEEK_API_KEY}"
+solver_api_key="${!SOLVER_API_KEY_ENV:-}"
 
 # ---- preflight: secrets + endpoint + tooling ----------------------------
 if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
@@ -82,21 +86,10 @@ if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
   echo "       against Azure OpenAI via it — see docs/SWEBENCH_CODEX_AZURE.zh.md." >&2
   exit 1
 fi
-if [ -z "$EVAL_BASE_URL" ] || [ -z "$EVAL_MODEL" ]; then
-  echo "error: EVAL_BASE_URL / EVAL_MODEL not set. mini-SWE-agent drives a remote" >&2
-  echo "       OpenAI-compatible model — set both in .env." >&2
-  exit 1
-fi
-case "${EVAL_BASE_URL}${EVAL_MODEL}" in
-  *your-eval-endpoint*|*your-eval-model*|*replace_me*)
-    echo "error: EVAL_BASE_URL / EVAL_MODEL still hold .env.example placeholders." >&2
-    echo "       Edit .env with your real endpoint and model name." >&2
-    exit 1 ;;
-esac
-if [ -z "$eval_api_key" ]; then
-  echo "warning: \$$EVAL_API_KEY_ENV is empty; mini-SWE-agent will call the eval" >&2
-  echo "         endpoint without an API key. Fine only for an unauthenticated" >&2
-  echo "         endpoint — otherwise set it in .env." >&2
+if [ -z "$solver_api_key" ]; then
+  echo "warning: \$$SOLVER_API_KEY_ENV is empty; the DeepSeek-V4-Pro solver will" >&2
+  echo "         fail unless DRY_RUN=1. Set it in .env, or override SOLVER_* to" >&2
+  echo "         point mini-SWE-agent at an endpoint you have access to." >&2
 fi
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   echo "error: a working Docker daemon is required. The SWE-bench harness runs" >&2
@@ -131,9 +124,9 @@ contains() { case ",$1," in *",$2,"*) return 0;; *) return 1;; esac; }
 # The per-run bits (--run-id, --iterations, arm flags, test-frontier) are added
 # by the callers. swebench.py rewrites the relative scripts/... path in the
 # command templates to the trusted absolute repo-root copy before invoking it.
-miniswe_run_cmd="python scripts/run_miniswe_swebench_single.py run --source-path {source_path} --instance-path {instance_path} --patch-path {patch_path} --task-dir {task_dir} --model $EVAL_MODEL --base-url $EVAL_BASE_URL --max-tokens $MINISWE_MAX_TOKENS"
-if [ -n "$eval_api_key" ]; then
-  miniswe_run_cmd="$miniswe_run_cmd --api-key-env $EVAL_API_KEY_ENV"
+miniswe_run_cmd="python scripts/run_miniswe_swebench_single.py run --source-path {source_path} --instance-path {instance_path} --patch-path {patch_path} --task-dir {task_dir} --model $SOLVER_MODEL --base-url $SOLVER_BASE_URL --max-tokens $MINISWE_MAX_TOKENS"
+if [ -n "$solver_api_key" ]; then
+  miniswe_run_cmd="$miniswe_run_cmd --api-key-env $SOLVER_API_KEY_ENV"
 fi
 
 common_args=(
