@@ -14,12 +14,16 @@ htmlcov/
 /runs/
 /logs/
 /data/*
-# Keep the static Terminal-Bench task manifest tracked — the test-split
-# resolver (terminus.load_terminus_instances) needs it; all other data/
-# content stays ignored.
+# Keep small static manifests/datasets tracked despite /data/* — the
+# experiments need them and they are not bulk data:
+#   * data/terminus/tasks.json — TB2 task list (test-split resolution)
+#   * data/swebench_train_volatile30.json(.ids.json) — the curated 30-task
+#     SWE-bench train slice plus its 470-instance held-out test set
 !/data/terminus/
 /data/terminus/*
 !/data/terminus/tasks.json
+!/data/swebench_train_volatile30.json
+!/data/swebench_train_volatile30.ids.json
 /results/
 
 *.zip
