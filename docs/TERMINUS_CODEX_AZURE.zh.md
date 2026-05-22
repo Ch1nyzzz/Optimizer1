@@ -41,7 +41,7 @@
 | 需要 | 说明 |
 |---|---|
 | 本仓库 | `git clone` 后用 **`main`** 分支 |
-| Python 环境 | 能 `pip install -e .` 安装本项目（会自动带上 `harbor` 等依赖） |
+| Python 环境 | 用 `pip install -e '.[terminus]'` 安装（`terminus` extra 才会带上 `harbor` + `daytona` SDK；普通 `pip install -e .` 不会装它们） |
 | Node + Codex CLI | `npm install -g @openai/codex`，用较新版本 |
 | Azure OpenAI | 一个 GPT-5 codex/推理模型的 **deployment**，记下它的 endpoint 和 key |
 | Daytona 账号 | <https://app.daytona.io> 注册，**并发沙箱配额 ≥ 40** |
@@ -61,8 +61,10 @@ git clone <仓库地址>
 cd Optimizer1
 git checkout main
 
-# 按项目惯例安装（会带上 harbor>=0.3 等依赖）
-pip install -e .
+# 装本项目 + terminus extra —— 会带上 harbor>=0.3、daytona SDK 等依赖。
+# 注意：harbor 在可选 extra 里，普通 `pip install -e .` 不会装它，
+# terminus 会 import harbor 失败。引号是为了防 shell 把 [terminus] 当通配符。
+pip install -e '.[terminus]'
 
 # 验证 Codex CLI
 npm install -g @openai/codex

@@ -29,7 +29,7 @@ Launch script: [`scripts/launch_terminus_codex_azure_daytona.sh`](../scripts/lau
 | Need | How |
 | --- | --- |
 | This repo | `git clone` + use the `main` branch |
-| Python env | Install the project (`pip install -e .` or the project's usual setup) |
+| Python env | Install with the `terminus` extra: `pip install -e '.[terminus]'` — it pulls in `harbor` + the `daytona` SDK (a plain `pip install -e .` does **not**) |
 | Codex CLI | `npm install -g @openai/codex` — verify with `codex --version` |
 | Azure OpenAI | A deployment of a GPT-5 codex/reasoning model; copy its endpoint + key |
 | Daytona | An account at <https://app.daytona.io> with a concurrent-sandbox quota **≥ 40** |
