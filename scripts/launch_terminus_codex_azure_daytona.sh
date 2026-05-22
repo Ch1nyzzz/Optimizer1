@@ -6,9 +6,10 @@
 # This is the experiment a teammate runs after pulling the repo. See
 # docs/TERMINUS_CODEX_AZURE.md for the full step-by-step setup.
 #
-#   * proposer = Codex CLI authenticated against Azure OpenAI. Auth is an API
-#                key in ~/.codex/config.toml (template: docs/codex_config.azure.toml);
-#                there is no interactive Codex "login" for Azure.
+#   * proposer = Codex CLI authenticated against Azure OpenAI (default), or the
+#                Claude Code CLI routed at a provider's anthropic-compatible
+#                endpoint. Pick with PROPOSER_AGENT=codex|claude — see the
+#                proposer knobs below and docs/TERMINUS_CODEX_AZURE.md.
 #   * solver   = DeepSeek-V4 on YOUR OWN endpoint — override SOLVER_MODEL /
 #                SOLVER_BASE_URL / SOLVER_API_KEY_ENV. Defaults point at the
 #                official DeepSeek API, not Together AI.
@@ -51,14 +52,12 @@ if [ -f .env ]; then
 fi
 
 # ---- preflight: secrets -------------------------------------------------
+# DAYTONA_API_KEY is always required (every rollout is a Daytona sandbox). The
+# proposer's own secret check is PROPOSER_AGENT-dependent and runs after the
+# knobs block below.
 if [ -z "${DAYTONA_API_KEY:-}" ]; then
   echo "error: DAYTONA_API_KEY not set. Copy .env.example to .env and fill in" >&2
   echo "       a managed-cloud key from https://app.daytona.io." >&2
-  exit 1
-fi
-if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
-  echo "error: AZURE_OPENAI_API_KEY not set. The Codex proposer authenticates" >&2
-  echo "       against Azure OpenAI via it — see docs/TERMINUS_CODEX_AZURE.md." >&2
   exit 1
 fi
 
@@ -77,12 +76,28 @@ TERMINUS_SOURCE_PATH="${TERMINUS_SOURCE_PATH:-references/vendor/meta-harness/ref
 TERMINUS_TEST_TASKS="${TERMINUS_TEST_TASKS:-}"
 DRY_RUN="${DRY_RUN:-0}"
 
-# Codex proposer (Azure OpenAI). CODEX_MODEL MUST be your Azure *deployment*
-# name — it is forwarded as `codex exec -m`, and config.toml's model_provider
-# routes it to Azure. Keep it in sync with `model` in ~/.codex/config.toml.
+# ---- proposer (PROPOSER_AGENT=codex|claude) -----------------------------
+PROPOSER_AGENT="${PROPOSER_AGENT:-codex}"
+
+# Codex proposer (Azure OpenAI) — used when PROPOSER_AGENT=codex. CODEX_MODEL
+# MUST be your Azure *deployment* name — it is forwarded as `codex exec -m`,
+# and config.toml's model_provider routes it to Azure. Keep it in sync with
+# `model` in ~/.codex/config.toml.
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.1-codex}"
 CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-high}"
 CODEX_HOME="${CODEX_HOME:-}"   # empty => ~/.codex (must hold the Azure config.toml)
+
+# Claude Code proposer — used when PROPOSER_AGENT=claude. Azure OpenAI is NOT
+# anthropic-compatible, so the Claude proposer is routed at a provider's
+# anthropic-compatible endpoint instead. Configure your provider:
+#   CLAUDE_BASE_URL    the provider's anthropic-compatible base URL
+#   CLAUDE_MODEL       the model id that provider expects
+#   CLAUDE_API_KEY_ENV names the .env variable holding the provider API key
+#   CLAUDE_EFFORT      optional thinking effort (low|medium|high|xhigh|max)
+CLAUDE_MODEL="${CLAUDE_MODEL:-}"
+CLAUDE_BASE_URL="${CLAUDE_BASE_URL:-}"
+CLAUDE_API_KEY_ENV="${CLAUDE_API_KEY_ENV:-ANTHROPIC_AUTH_TOKEN}"
+CLAUDE_EFFORT="${CLAUDE_EFFORT:-}"
 
 # Terminus solver — DeepSeek-V4 on your own endpoint. Override all three to
 # point at the endpoint you have access to. SOLVER_MODEL is a litellm
@@ -98,19 +113,65 @@ if [ -z "${!SOLVER_API_KEY_ENV:-}" ]; then
   echo "         unless DRY_RUN=1. Set it in .env or export it." >&2
 fi
 
+# ---- preflight: proposer ------------------------------------------------
+# Build the proposer CLI fragment and check the secret the chosen agent needs.
+proposer_args=()
+if [ "$PROPOSER_AGENT" = "codex" ]; then
+  if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
+    echo "error: AZURE_OPENAI_API_KEY not set. The Codex proposer authenticates" >&2
+    echo "       against Azure OpenAI via it — see docs/TERMINUS_CODEX_AZURE.md." >&2
+    exit 1
+  fi
+  proposer_args=(
+    --proposer-agent codex
+    --codex-model "$CODEX_MODEL"
+    --codex-reasoning-effort "$CODEX_REASONING_EFFORT"
+  )
+  [ -n "$CODEX_HOME" ] && proposer_args+=(--codex-home "$CODEX_HOME")
+elif [ "$PROPOSER_AGENT" = "claude" ]; then
+  claude_key="${!CLAUDE_API_KEY_ENV:-}"
+  if [ -z "$CLAUDE_BASE_URL" ] || [ -z "$CLAUDE_MODEL" ]; then
+    echo "error: PROPOSER_AGENT=claude needs CLAUDE_BASE_URL and CLAUDE_MODEL set" >&2
+    echo "       to your provider's anthropic-compatible endpoint and model id —" >&2
+    echo "       see docs/TERMINUS_CODEX_AZURE.md." >&2
+    exit 1
+  fi
+  if [ -z "$claude_key" ]; then
+    echo "error: \$$CLAUDE_API_KEY_ENV is empty. PROPOSER_AGENT=claude reads the" >&2
+    echo "       provider API key from the .env variable named by CLAUDE_API_KEY_ENV." >&2
+    exit 1
+  fi
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "error: the 'claude' CLI is not on PATH. PROPOSER_AGENT=claude runs the" >&2
+    echo "       Claude Code CLI — install it: npm install -g @anthropic-ai/claude-code" >&2
+    exit 1
+  fi
+  proposer_args=(
+    --proposer-agent claude
+    --claude-base-url "$CLAUDE_BASE_URL"
+    --claude-model "$CLAUDE_MODEL"
+    --claude-auth-token "$claude_key"
+  )
+  [ -n "$CLAUDE_EFFORT" ] && proposer_args+=(--claude-effort "$CLAUDE_EFFORT")
+else
+  echo "error: PROPOSER_AGENT must be 'codex' or 'claude'; got '$PROPOSER_AGENT'" >&2
+  exit 1
+fi
+
 mkdir -p logs runs
 status_file="logs/launch_terminus_codex_azure_daytona_${TS}.status"
 : > "$status_file"
-printf '[%s] LAUNCHER start ts=%s iter=%s arms=%s split=%s limit=%s concurrency=%s\n' \
-  "$(date -Is)" "$TS" "$ITERATIONS" "$ARMS" "$SPLIT" "$LIMIT" "$ROLLOUT_CONCURRENCY" \
+printf '[%s] LAUNCHER start ts=%s proposer=%s iter=%s arms=%s split=%s limit=%s concurrency=%s\n' \
+  "$(date -Is)" "$TS" "$PROPOSER_AGENT" "$ITERATIONS" "$ARMS" "$SPLIT" "$LIMIT" "$ROLLOUT_CONCURRENCY" \
   >> "$status_file"
 
 contains() { case ",$1," in *",$2,"*) return 0;; *) return 1;; esac; }
 
 # ---- shared CLI fragment ------------------------------------------------
 # Everything common to the baseline prime and both arms: terminus dataset +
-# Daytona rollout + DeepSeek solver + Codex(Azure) proposer. The per-run bits
-# (--run-id, --iterations, arm flags, test-frontier) are added by the callers.
+# Daytona rollout + DeepSeek solver + the chosen proposer (proposer_args, built
+# in the preflight above). The per-run bits (--run-id, --iterations, arm flags,
+# test-frontier) are added by the callers.
 common_args=(
   --terminus
   --split "$SPLIT"
@@ -124,14 +185,11 @@ common_args=(
   --terminus-rollout-concurrency "$ROLLOUT_CONCURRENCY"
   --terminus-agent-timeout-multiplier "$AGENT_TIMEOUT_MULT"
   --terminus-job-timeout-s "$JOB_TIMEOUT_S"
-  --proposer-agent codex
-  --codex-model "$CODEX_MODEL"
-  --codex-reasoning-effort "$CODEX_REASONING_EFFORT"
+  "${proposer_args[@]}"
 )
 [ -n "$ENV_KWARGS" ] && common_args+=(--terminus-env-kwargs "$ENV_KWARGS")
 [ -n "$REASONING_EFFORT" ] && common_args+=(--terminus-reasoning-effort "$REASONING_EFFORT")
 [ -n "$TERMINUS_TEST_TASKS" ] && common_args+=(--terminus-test-tasks "$TERMINUS_TEST_TASKS")
-[ -n "$CODEX_HOME" ] && common_args+=(--codex-home "$CODEX_HOME")
 [ "$DRY_RUN" = "1" ] && common_args+=(--dry-run)
 
 # ---- shared primed baseline --------------------------------------------

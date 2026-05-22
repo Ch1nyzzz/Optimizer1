@@ -5,9 +5,10 @@
 # This is the experiment a teammate runs after pulling the repo. See
 # docs/SWEBENCH_CODEX_AZURE.zh.md for the full step-by-step setup.
 #
-#   * proposer   = Codex CLI authenticated against Azure OpenAI. Auth is an API
-#                  key in ~/.codex/config.toml (template: docs/codex_config.azure.toml);
-#                  there is no interactive Codex "login" for Azure.
+#   * proposer   = Codex CLI authenticated against Azure OpenAI (default), or the
+#                  Claude Code CLI routed at a provider's anthropic-compatible
+#                  endpoint. Pick with PROPOSER_AGENT=codex|claude — see the
+#                  proposer knobs below and docs/SWEBENCH_CODEX_AZURE.zh.md.
 #   * solver     = the DeepSeek-V4-Pro model mini-SWE-agent drives while solving
 #                  each SWE-bench task — the same base model as the Terminal-Bench
 #                  experiment. It runs on YOUR OWN endpoint; override
@@ -64,12 +65,28 @@ MINISWE_MAX_TOKENS="${MINISWE_MAX_TOKENS:-4096}"
 TEST_FRONTIER_LIMIT="${TEST_FRONTIER_LIMIT:-0}"   # 0 = all 470 held-out test instances
 DRY_RUN="${DRY_RUN:-0}"
 
-# Codex proposer (Azure OpenAI). CODEX_MODEL MUST be your Azure *deployment*
-# name — it is forwarded as `codex exec -m`, and config.toml's model_provider
-# routes it to Azure. Keep it in sync with `model` in ~/.codex/config.toml.
+# ---- proposer (PROPOSER_AGENT=codex|claude) -----------------------------
+PROPOSER_AGENT="${PROPOSER_AGENT:-codex}"
+
+# Codex proposer (Azure OpenAI) — used when PROPOSER_AGENT=codex. CODEX_MODEL
+# MUST be your Azure *deployment* name — it is forwarded as `codex exec -m`,
+# and config.toml's model_provider routes it to Azure. Keep it in sync with
+# `model` in ~/.codex/config.toml.
 CODEX_MODEL="${CODEX_MODEL:-gpt-5.1-codex}"
 CODEX_REASONING_EFFORT="${CODEX_REASONING_EFFORT:-high}"
 CODEX_HOME="${CODEX_HOME:-}"   # empty => ~/.codex (must hold the Azure config.toml)
+
+# Claude Code proposer — used when PROPOSER_AGENT=claude. Azure OpenAI is NOT
+# anthropic-compatible, so the Claude proposer is routed at a provider's
+# anthropic-compatible endpoint instead. Configure your provider:
+#   CLAUDE_BASE_URL    the provider's anthropic-compatible base URL
+#   CLAUDE_MODEL       the model id that provider expects
+#   CLAUDE_API_KEY_ENV names the .env variable holding the provider API key
+#   CLAUDE_EFFORT      optional thinking effort (low|medium|high|xhigh|max)
+CLAUDE_MODEL="${CLAUDE_MODEL:-}"
+CLAUDE_BASE_URL="${CLAUDE_BASE_URL:-}"
+CLAUDE_API_KEY_ENV="${CLAUDE_API_KEY_ENV:-ANTHROPIC_AUTH_TOKEN}"
+CLAUDE_EFFORT="${CLAUDE_EFFORT:-}"
 
 # SWE-bench solver — DeepSeek-V4-Pro on your own endpoint, the same base model
 # the Terminal-Bench experiment uses. Override all three to point mini-SWE-agent
@@ -82,12 +99,52 @@ SOLVER_BASE_URL="${SOLVER_BASE_URL:-https://api.deepseek.com/v1}"
 SOLVER_API_KEY_ENV="${SOLVER_API_KEY_ENV:-DEEPSEEK_API_KEY}"
 solver_api_key="${!SOLVER_API_KEY_ENV:-}"
 
-# ---- preflight: secrets + endpoint + tooling ----------------------------
-if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
-  echo "error: AZURE_OPENAI_API_KEY not set. The Codex proposer authenticates" >&2
-  echo "       against Azure OpenAI via it — see docs/SWEBENCH_CODEX_AZURE.zh.md." >&2
+# ---- preflight: proposer ------------------------------------------------
+# Build the proposer CLI fragment and check the secret the chosen agent needs.
+proposer_args=()
+if [ "$PROPOSER_AGENT" = "codex" ]; then
+  if [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
+    echo "error: AZURE_OPENAI_API_KEY not set. The Codex proposer authenticates" >&2
+    echo "       against Azure OpenAI via it — see docs/SWEBENCH_CODEX_AZURE.zh.md." >&2
+    exit 1
+  fi
+  proposer_args=(
+    --proposer-agent codex
+    --codex-model "$CODEX_MODEL"
+    --codex-reasoning-effort "$CODEX_REASONING_EFFORT"
+  )
+  [ -n "$CODEX_HOME" ] && proposer_args+=(--codex-home "$CODEX_HOME")
+elif [ "$PROPOSER_AGENT" = "claude" ]; then
+  claude_key="${!CLAUDE_API_KEY_ENV:-}"
+  if [ -z "$CLAUDE_BASE_URL" ] || [ -z "$CLAUDE_MODEL" ]; then
+    echo "error: PROPOSER_AGENT=claude needs CLAUDE_BASE_URL and CLAUDE_MODEL set" >&2
+    echo "       to your provider's anthropic-compatible endpoint and model id —" >&2
+    echo "       see docs/SWEBENCH_CODEX_AZURE.zh.md." >&2
+    exit 1
+  fi
+  if [ -z "$claude_key" ]; then
+    echo "error: \$$CLAUDE_API_KEY_ENV is empty. PROPOSER_AGENT=claude reads the" >&2
+    echo "       provider API key from the .env variable named by CLAUDE_API_KEY_ENV." >&2
+    exit 1
+  fi
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "error: the 'claude' CLI is not on PATH. PROPOSER_AGENT=claude runs the" >&2
+    echo "       Claude Code CLI — install it: npm install -g @anthropic-ai/claude-code" >&2
+    exit 1
+  fi
+  proposer_args=(
+    --proposer-agent claude
+    --claude-base-url "$CLAUDE_BASE_URL"
+    --claude-model "$CLAUDE_MODEL"
+    --claude-auth-token "$claude_key"
+  )
+  [ -n "$CLAUDE_EFFORT" ] && proposer_args+=(--claude-effort "$CLAUDE_EFFORT")
+else
+  echo "error: PROPOSER_AGENT must be 'codex' or 'claude'; got '$PROPOSER_AGENT'" >&2
   exit 1
 fi
+
+# ---- preflight: solver endpoint + tooling -------------------------------
 if [ -z "$solver_api_key" ]; then
   echo "warning: \$$SOLVER_API_KEY_ENV is empty; the DeepSeek-V4-Pro solver will" >&2
   echo "         fail unless DRY_RUN=1. Set it in .env, or override SOLVER_* to" >&2
@@ -114,18 +171,19 @@ fi
 mkdir -p logs runs
 status_file="logs/launch_swebench_codex_azure_${TS}.status"
 : > "$status_file"
-printf '[%s] LAUNCHER start ts=%s iter=%s arms=%s limit=%s workers=%s test_limit=%s\n' \
-  "$(date -Is)" "$TS" "$ITERATIONS" "$ARMS" "$SWE_LIMIT" "$EVAL_WORKERS" "$TEST_FRONTIER_LIMIT" \
+printf '[%s] LAUNCHER start ts=%s proposer=%s iter=%s arms=%s limit=%s workers=%s test_limit=%s\n' \
+  "$(date -Is)" "$TS" "$PROPOSER_AGENT" "$ITERATIONS" "$ARMS" "$SWE_LIMIT" "$EVAL_WORKERS" "$TEST_FRONTIER_LIMIT" \
   >> "$status_file"
 
 contains() { case ",$1," in *",$2,"*) return 0;; *) return 1;; esac; }
 
 # ---- shared CLI fragment ------------------------------------------------
 # Everything common to the baseline prime and both arms: SWE-bench dataset +
-# mini-SWE-agent run/eval commands (remote eval model) + Codex(Azure) proposer.
-# The per-run bits (--run-id, --iterations, arm flags, test-frontier) are added
-# by the callers. swebench.py rewrites the relative scripts/... path in the
-# command templates to the trusted absolute repo-root copy before invoking it.
+# mini-SWE-agent run/eval commands (remote eval model) + the chosen proposer
+# (proposer_args, built in the preflight above). The per-run bits (--run-id,
+# --iterations, arm flags, test-frontier) are added by the callers. swebench.py
+# rewrites the relative scripts/... path in the command templates to the
+# trusted absolute repo-root copy before invoking it.
 miniswe_run_cmd="python scripts/run_miniswe_swebench_single.py run --source-path {source_path} --instance-path {instance_path} --patch-path {patch_path} --task-dir {task_dir} --model $SOLVER_MODEL --base-url $SOLVER_BASE_URL --max-tokens $MINISWE_MAX_TOKENS"
 if [ -n "$solver_api_key" ]; then
   miniswe_run_cmd="$miniswe_run_cmd --api-key-env $SOLVER_API_KEY_ENV"
@@ -140,11 +198,8 @@ common_args=(
   --eval-workers "$EVAL_WORKERS"
   --mini-swe-agent-command "$miniswe_run_cmd"
   --mini-swe-agent-eval-command "python scripts/run_miniswe_swebench_single.py eval --source-path {source_path} --instance-path {instance_path} --patch-path {patch_path} --task-dir {task_dir}"
-  --proposer-agent codex
-  --codex-model "$CODEX_MODEL"
-  --codex-reasoning-effort "$CODEX_REASONING_EFFORT"
+  "${proposer_args[@]}"
 )
-[ -n "$CODEX_HOME" ] && common_args+=(--codex-home "$CODEX_HOME")
 [ "$DRY_RUN" = "1" ] && common_args+=(--dry-run)
 
 # ---- shared primed baseline --------------------------------------------

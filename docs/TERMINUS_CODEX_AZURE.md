@@ -101,6 +101,35 @@ SOLVER_API_KEY_ENV=YOUR_KEY_VAR \
 
 `SOLVER_API_KEY_ENV` names the variable in `.env` that holds the key.
 
+### Switching the proposer to Claude Code
+
+The proposer defaults to the Codex CLI (`PROPOSER_AGENT=codex`). To run the
+**Claude Code CLI** as the proposer instead, launch with `PROPOSER_AGENT=claude`.
+
+Azure OpenAI is **not** anthropic-compatible, so the Claude proposer cannot use
+your Azure resource — it is routed at a provider that exposes an
+**anthropic-compatible** endpoint (DeepSeek, Kimi, an anthropic-compatible
+proxy, …). You configure that provider:
+
+```bash
+PROPOSER_AGENT=claude \
+CLAUDE_BASE_URL=https://your-provider/anthropic \
+CLAUDE_MODEL=the-model-id-your-provider-expects \
+CLAUDE_API_KEY_ENV=ANTHROPIC_AUTH_TOKEN \
+  bash scripts/launch_terminus_codex_azure_daytona.sh
+```
+
+- `CLAUDE_BASE_URL` / `CLAUDE_MODEL` — **required** for the Claude proposer:
+  the provider's anthropic-compatible base URL and the model id it expects.
+- `CLAUDE_API_KEY_ENV` — names the `.env` variable holding that provider's API
+  key (default `ANTHROPIC_AUTH_TOKEN`). Put the key in `.env`, not on the
+  command line.
+- `CLAUDE_EFFORT` — optional Claude Code thinking effort (`low`…`max`).
+- The Claude proposer needs the `claude` CLI on `PATH`
+  (`npm install -g @anthropic-ai/claude-code`). It runs on the host — no Docker.
+- With `PROPOSER_AGENT=claude` the `CODEX_*` knobs and `AZURE_OPENAI_API_KEY`
+  are unused, and `~/.codex/config.toml` is not needed.
+
 > **What to put in `SOLVER_MODEL` — important.** `openai/deepseek-v4-pro` is a
 > **litellm model id** in `<provider>/<model-name>` form, and the default very
 > likely needs adjusting to however your DeepSeek-V4-Pro is provisioned:
@@ -121,9 +150,13 @@ SOLVER_API_KEY_ENV=YOUR_KEY_VAR \
 | `LIMIT` | `20` | Tasks per iteration (first N of the 30 hard tasks) |
 | `ROLLOUT_TRIALS` | `2` | Attempts per task |
 | `ROLLOUT_CONCURRENCY` | `40` | Max concurrent Daytona sandboxes — **keep ≤ your quota** |
-| `CODEX_MODEL` | `gpt-5.1-codex` | Your Azure deployment name |
+| `PROPOSER_AGENT` | `codex` | Proposer agent: `codex` or `claude` (see above) |
+| `CODEX_MODEL` | `gpt-5.1-codex` | Your Azure deployment name (`PROPOSER_AGENT=codex`) |
 | `CODEX_REASONING_EFFORT` | `high` | Codex proposer reasoning effort |
 | `CODEX_HOME` | _(unset → `~/.codex`)_ | Dir holding the Azure `config.toml` |
+| `CLAUDE_BASE_URL` / `CLAUDE_MODEL` | _(required if `claude`)_ | Provider anthropic-compatible endpoint + model id |
+| `CLAUDE_API_KEY_ENV` | `ANTHROPIC_AUTH_TOKEN` | `.env` var holding the provider API key |
+| `CLAUDE_EFFORT` | _(unset)_ | Claude Code thinking effort (`low`…`max`) |
 | `SOLVER_MODEL` / `SOLVER_BASE_URL` / `SOLVER_API_KEY_ENV` | DeepSeek API | Terminus solver endpoint |
 | `BASELINE_DIR` | `runs/...baseline...` | Reuse a primed baseline across launches |
 | `DRY_RUN` | `0` | `1` = wire-check only, no Harbor/Daytona calls |

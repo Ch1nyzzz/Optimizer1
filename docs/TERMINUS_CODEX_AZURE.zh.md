@@ -207,12 +207,43 @@ status 文件里的关键标记：
 | `LIMIT` | `20` | 每轮题目数（30 道 hard 里的前 N 道） |
 | `ROLLOUT_TRIALS` | `2` | 每道题尝试次数 |
 | `ROLLOUT_CONCURRENCY` | `40` | Daytona 最大并发沙箱数 —— **务必 ≤ 你的配额** |
-| `CODEX_MODEL` | `gpt-5.1-codex` | 你的 Azure deployment 名称 |
+| `PROPOSER_AGENT` | `codex` | proposer 智能体：`codex` 或 `claude`，见 8.1 |
+| `CODEX_MODEL` | `gpt-5.1-codex` | 你的 Azure deployment 名称（`PROPOSER_AGENT=codex` 用） |
 | `CODEX_REASONING_EFFORT` | `high` | Codex proposer 的推理强度 |
 | `CODEX_HOME` | 不设 → `~/.codex` | 存放 Azure `config.toml` 的目录 |
+| `CLAUDE_BASE_URL` / `CLAUDE_MODEL` | `claude` 时必填 | provider 的 anthropic 兼容端点 + 模型 id |
+| `CLAUDE_API_KEY_ENV` | `ANTHROPIC_AUTH_TOKEN` | `.env` 里存放 provider key 的变量名 |
+| `CLAUDE_EFFORT` | 不设 | Claude Code 思考强度（`low`…`max`） |
 | `SOLVER_MODEL` / `SOLVER_BASE_URL` / `SOLVER_API_KEY_ENV` | 官方 DeepSeek API | solver 端点，见第 9 节 |
 | `BASELINE_DIR` | `runs/...baseline...` | 复用已 prime 好的 baseline |
 | `DRY_RUN` | `0` | `1` = 只做接线自检 |
+
+### 8.1 把 proposer 换成 Claude Code
+
+proposer 默认是 Codex CLI（`PROPOSER_AGENT=codex`）。想改用 **Claude Code CLI**
+当 proposer，启动时加 `PROPOSER_AGENT=claude` 即可。
+
+Azure OpenAI **不是** anthropic 兼容端点，所以 Claude proposer 不能用你的 Azure
+资源 —— 它会路由到一个提供 **anthropic 兼容**端点的 provider（DeepSeek、Kimi、
+某个 anthropic 兼容代理等）。这个 provider 由你来配：
+
+```bash
+PROPOSER_AGENT=claude \
+CLAUDE_BASE_URL=https://你的provider/anthropic \
+CLAUDE_MODEL=该provider认的模型id \
+CLAUDE_API_KEY_ENV=ANTHROPIC_AUTH_TOKEN \
+  bash scripts/launch_terminus_codex_azure_daytona.sh
+```
+
+- `CLAUDE_BASE_URL` / `CLAUDE_MODEL` —— 用 Claude proposer 时**必填**：provider
+  的 anthropic 兼容 base URL，以及它实际认的模型 id。
+- `CLAUDE_API_KEY_ENV` —— 写的是 **`.env` 里存放该 provider key 的变量名**
+  （默认 `ANTHROPIC_AUTH_TOKEN`）。key 放进 `.env`，不要写在命令行上。
+- `CLAUDE_EFFORT` —— 可选，Claude Code 思考强度（`low`…`max`）。
+- 用 Claude proposer 需要本机 `PATH` 上有 `claude` CLI
+  （`npm install -g @anthropic-ai/claude-code`）。它跑在宿主机上，不需要 Docker。
+- `PROPOSER_AGENT=claude` 时，`CODEX_*` 那几个变量和 `AZURE_OPENAI_API_KEY`
+  都用不到 —— 也就不必配 `~/.codex/config.toml`（第 3 节可跳过）。
 
 ---
 

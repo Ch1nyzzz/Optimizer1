@@ -209,15 +209,48 @@ status 文件关键标记：`BASELINE_PRIME` / `BASELINE_PRIME_DONE`、`START` +
 | `EVAL_TIMEOUT_S` | `900` | 单题评测超时 |
 | `MINISWE_MAX_TOKENS` | `4096` | mini-SWE-agent 单次回复 token 上限 |
 | `TEST_FRONTIER_LIMIT` | `0` | 跑完后 test 集评测题数，**`0` = 全部 470 道**（很重，可调小） |
-| `CODEX_MODEL` | `gpt-5.1-codex` | 你的 Azure deployment 名称 |
+| `PROPOSER_AGENT` | `codex` | proposer 智能体：`codex` 或 `claude`，见 8.1 |
+| `CODEX_MODEL` | `gpt-5.1-codex` | 你的 Azure deployment 名称（`PROPOSER_AGENT=codex` 用） |
 | `CODEX_REASONING_EFFORT` | `high` | Codex proposer 推理强度 |
 | `CODEX_HOME` | 不设 → `~/.codex` | 存放 Azure `config.toml` 的目录 |
+| `CLAUDE_BASE_URL` / `CLAUDE_MODEL` | `claude` 时必填 | provider 的 anthropic 兼容端点 + 模型 id |
+| `CLAUDE_API_KEY_ENV` | `ANTHROPIC_AUTH_TOKEN` | `.env` 里存放 provider key 的变量名 |
+| `CLAUDE_EFFORT` | 不设 | Claude Code 思考强度（`low`…`max`） |
 | `SOLVER_MODEL` | `openai/deepseek-v4-pro` | mini-SWE-agent 的基座模型 |
 | `SOLVER_BASE_URL` | `https://api.deepseek.com/v1` | DeepSeek-V4-Pro 端点 |
 | `SOLVER_API_KEY_ENV` | `DEEPSEEK_API_KEY` | `.env` 里存放该端点 key 的变量名 |
 | `SWE_DATA_PATH` | `data/swebench_train_volatile30.json` | 数据集路径 |
 | `BASELINE_DIR` | `runs/...baseline...` | 复用已 prime 好的 baseline |
 | `DRY_RUN` | `0` | `1` = 只做接线自检 |
+
+### 8.1 把 proposer 换成 Claude Code
+
+proposer 默认是 Codex CLI（`PROPOSER_AGENT=codex`）。想改用 **Claude Code CLI**
+当 proposer，启动时加 `PROPOSER_AGENT=claude` 即可。
+
+Azure OpenAI **不是** anthropic 兼容端点，所以 Claude proposer 不能用你的 Azure
+资源 —— 它会路由到一个提供 **anthropic 兼容**端点的 provider（DeepSeek、Kimi、
+某个 anthropic 兼容代理等）。这个 provider 由你来配：
+
+```bash
+PROPOSER_AGENT=claude \
+CLAUDE_BASE_URL=https://你的provider/anthropic \
+CLAUDE_MODEL=该provider认的模型id \
+CLAUDE_API_KEY_ENV=ANTHROPIC_AUTH_TOKEN \
+  bash scripts/launch_swebench_codex_azure.sh
+```
+
+- `CLAUDE_BASE_URL` / `CLAUDE_MODEL` —— 用 Claude proposer 时**必填**：provider
+  的 anthropic 兼容 base URL，以及它实际认的模型 id。
+- `CLAUDE_API_KEY_ENV` —— 写的是 **`.env` 里存放该 provider key 的变量名**
+  （默认 `ANTHROPIC_AUTH_TOKEN`）。key 放进 `.env`，不要写在命令行上。
+- `CLAUDE_EFFORT` —— 可选，Claude Code 思考强度（`low`…`max`）。
+- 用 Claude proposer 需要本机 `PATH` 上有 `claude` CLI
+  （`npm install -g @anthropic-ai/claude-code`）。它跑在宿主机上，不需要 Docker。
+  注意：SWE-bench 的评测仍然要本机 Docker —— 那是评测环节的要求，和 proposer 用
+  哪个智能体无关。
+- `PROPOSER_AGENT=claude` 时，`CODEX_*` 那几个变量和 `AZURE_OPENAI_API_KEY`
+  都用不到 —— 也就不必配 `~/.codex/config.toml`（第 3 节可跳过）。
 
 ---
 
