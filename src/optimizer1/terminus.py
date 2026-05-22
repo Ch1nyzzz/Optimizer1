@@ -393,12 +393,23 @@ class TerminusHarborRunner:
                 )
             )
 
-        count = len(task_results)
+        # task_results carries one row per trial (task x attempt). Passrate and
+        # token averages are per-trial, but the CandidateResult.count field is
+        # the size of the evaluation set — the number of distinct tasks — so it
+        # matches len(examples) in the optimizer's --baseline-dir count check
+        # (a baseline primed on N tasks must stay reusable by an N-task arm,
+        # regardless of how many attempts per task harbor ran).
+        trial_count = len(task_results)
+        task_count = len({run.task_id for run in trial_runs})
         passrate = (
-            sum(1 for item in task_results if item.passed) / count if count else 0.0
+            sum(1 for item in task_results if item.passed) / trial_count
+            if trial_count
+            else 0.0
         )
         average_score = (
-            sum(item.score for item in task_results) / count if count else 0.0
+            sum(item.score for item in task_results) / trial_count
+            if trial_count
+            else 0.0
         )
         prompt_tokens = sum(item.prompt_tokens for item in task_results)
         completion_tokens = sum(item.completion_tokens for item in task_results)
@@ -409,10 +420,10 @@ class TerminusHarborRunner:
             passrate=passrate,
             average_score=average_score,
             token_consuming=token_consuming,
-            avg_token_consuming=(token_consuming / count if count else 0.0),
-            avg_prompt_tokens=(prompt_tokens / count if count else 0.0),
-            avg_completion_tokens=(completion_tokens / count if count else 0.0),
-            count=count,
+            avg_token_consuming=(token_consuming / trial_count if trial_count else 0.0),
+            avg_prompt_tokens=(prompt_tokens / trial_count if trial_count else 0.0),
+            avg_completion_tokens=(completion_tokens / trial_count if trial_count else 0.0),
+            count=task_count,
             config=dict(candidate),
             result_path=str(result_path),
         )
